@@ -1,0 +1,17 @@
+torch>=2.0.0
+torchvision
+datasets
+sentencepiece
+transformers
+accelerate
+peft
+gradio
+langchain
+chromadb
+pillow
+tqdm
+einops
+bitsandbytes
+safetensors
+fastapi
+uvicorn
