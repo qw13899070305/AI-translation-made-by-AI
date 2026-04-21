@@ -58,7 +58,6 @@ demo = gr.ChatInterface(
     title="🤖 全能型自研 AI 助手",
     description="集成了 LoRA 微调、RAG 检索、GQA/MoE 架构、多模态理解。",
     additional_inputs=[
-        gr.Audio(source="microphone", type="numpy", label="🎤 语音输入"),   # <-- 新加的行
         gr.File(file_count="multiple", label="上传文档 (PDF/TXT) 用于 RAG"),
         gr.Image(type="pil", label="上传图片 (多模态)")
     ],

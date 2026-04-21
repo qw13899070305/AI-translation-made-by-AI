@@ -18,7 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo -e "${BLUE}========================================${NC}"
-echo -e "${GREEN}   🤖 我的专属 AI 助手 启动器${NC}"
+echo -e "${GREEN}   🤖 我的专属 AI 助手 启动器 (Linux)${NC}"
 echo -e "${BLUE}========================================${NC}"
 
 # 检查 Python 版本

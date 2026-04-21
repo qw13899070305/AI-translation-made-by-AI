@@ -4,7 +4,7 @@ class Config:
     # ========== 数据 ==========
     text_datasets = [
         "Open-Orca/OpenOrca",
-        "GAIR/MegaScience"
+        "GAIR/MegaScience",
         "my_local_data.txt"   # 直接写文件名，表示项目当前目录下的文件
     ]
     max_samples_per_dataset = 3000
