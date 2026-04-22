@@ -117,6 +117,7 @@ python train.py
 bash start.sh      # Linux/macOS
 ./start.command    # macOS 双击
 start.bat          # Windows
+start.ps1          # Windows
 ```
 
 ---
