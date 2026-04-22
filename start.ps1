@@ -73,7 +73,7 @@ function Check-Model {
     }
 }
 
-# 独立工具菜单
+# 独立工具菜单（已扩展）
 function Show-ToolsMenu {
     do {
         Write-Host ""
@@ -83,8 +83,11 @@ function Show-ToolsMenu {
         Write-Host "  3) 模型量化"
         Write-Host "  4) 数据集预览"
         Write-Host "  5) 长期记忆测试"
-        Write-Host "  6) 返回主菜单"
-        $choice = Read-Host "请输入数字"
+        Write-Host "  6) 数据扩充（下载多源数据）"
+        Write-Host "  7) 多任务学习训练"
+        Write-Host "  8) 持续学习训练"
+        Write-Host "  9) 返回主菜单"
+        $choice = Read-Host "请输入数字 (1-9)"
 
         switch ($choice) {
             '1' { python web_search.py }
@@ -92,11 +95,14 @@ function Show-ToolsMenu {
             '3' { python quantize.py }
             '4' { python preview_data.py }
             '5' { python recall.py }
-            '6' { return }
+            '6' { python enhanced_data_loader.py }
+            '7' { python multitask_trainer.py }
+            '8' { python continual_trainer.py }
+            '9' { return }
             default { Write-ColorLine "无效输入" Red }
         }
-        if ($choice -ne '6') { Read-Host "按回车键继续..." }
-    } while ($choice -ne '6')
+        if ($choice -ne '9') { Read-Host "按回车键继续..." }
+    } while ($choice -ne '9')
 }
 
 # ============================================

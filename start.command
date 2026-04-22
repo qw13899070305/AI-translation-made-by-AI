@@ -19,7 +19,6 @@ cd "$(dirname "$0")"
 # 2. 环境检查函数（每个函数只做一件事）
 # ============================================
 
-# 检查 Python3 是否可用
 check_python() {
     if ! command -v python3 &>/dev/null; then
         echo -e "${RED}❌ 未找到 python3，请先安装 Python 3.8+${NC}"
@@ -28,7 +27,6 @@ check_python() {
     echo -e "${GREEN}✅ Python3 已就绪${NC}"
 }
 
-# 激活虚拟环境（如果存在）
 activate_venv() {
     if [ -d "venv" ]; then
         source venv/bin/activate
@@ -41,7 +39,6 @@ activate_venv() {
     fi
 }
 
-# 检查 PyTorch 是否安装
 check_pytorch() {
     if python3 -c "import torch" 2>/dev/null; then
         local torch_version=$(python3 -c "import torch; print(torch.__version__)")
@@ -52,7 +49,6 @@ check_pytorch() {
     fi
 }
 
-# 检查并训练分词器
 check_tokenizer() {
     if [ -f "tokenizer/our_bpe.model" ]; then
         echo -e "${GREEN}✅ 分词器已存在${NC}"
@@ -63,7 +59,6 @@ check_tokenizer() {
     fi
 }
 
-# 检查模型检查点，若无则询问是否训练
 check_model() {
     local ckpt_count=$(find checkpoints -name "*.pt" 2>/dev/null | wc -l)
     local lora_count=$(find lora_weights -name "*.pt" 2>/dev/null | wc -l)
@@ -99,7 +94,7 @@ show_main_menu() {
 }
 
 # ============================================
-# 4. 独立工具子菜单
+# 4. 独立工具子菜单（已扩展新工具）
 # ============================================
 run_tools_menu() {
     while true; do
@@ -110,9 +105,12 @@ run_tools_menu() {
         echo "  3) 模型量化"
         echo "  4) 数据集预览"
         echo "  5) 长期记忆测试"
-        echo "  6) 返回主菜单"
+        echo "  6) 数据扩充（下载多源数据）"
+        echo "  7) 多任务学习训练"
+        echo "  8) 持续学习训练"
+        echo "  9) 返回主菜单"
         echo ""
-        read -p "请输入数字 (1-6): " tool_choice
+        read -p "请输入数字 (1-9): " tool_choice
 
         case $tool_choice in
             1) python3 web_search.py ;;
@@ -120,7 +118,10 @@ run_tools_menu() {
             3) python3 quantize.py ;;
             4) python3 preview_data.py ;;
             5) python3 recall.py ;;
-            6) return ;;
+            6) python3 enhanced_data_loader.py ;;
+            7) python3 multitask_trainer.py ;;
+            8) python3 continual_trainer.py ;;
+            9) return ;;
             *) echo -e "${RED}无效输入，请重新选择${NC}" ;;
         esac
         read -p "按回车键继续..."

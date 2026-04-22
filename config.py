@@ -6,7 +6,8 @@ class Config:
         "Open-Orca/OpenOrca",
         "GAIR/MegaScience",
         "my_local_data.txt",
-        "distillation.txt"
+        "distillation.txt",
+        "enhanced_data.txt"
     ]
     max_samples_per_dataset = 3000
     max_seq_len = 512
