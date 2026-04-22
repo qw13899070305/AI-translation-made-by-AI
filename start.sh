@@ -66,15 +66,14 @@ if [ $CKPT_COUNT -eq 0 ] && [ $LORA_COUNT -eq 0 ]; then
 fi
 
 # 显示菜单
-echo ""
-echo -e "${BLUE}请选择启动模式:${NC}"
 echo "  1) Web 界面 (Gradio) - 推荐，支持图文和 RAG"
 echo "  2) 命令行对话 (CLI)"
 echo "  3) API 后端服务 (FastAPI) - 供手机端调用"
 echo "  4) 仅启动 RAG 向量数据库测试"
-echo "  5) 退出"
+echo "  5) 人设对话模式 (Persona Chat)"    # <-- 新增这一行
+echo "  6) 退出"                            # <-- 原 5 改为 6
 echo ""
-read -p "输入数字 (1-5): " choice
+read -p "输入数字 (1-6): " choice           # <-- 提示改为 1-6
 
 case $choice in
     1)
@@ -95,6 +94,10 @@ case $choice in
         python3 -c "from rag_module import RAGModule; r = RAGModule(); print('RAG 模块加载成功！')"
         ;;
     5)
+        echo -e "${GREEN}🎭 启动人设对话模式...${NC}"
+        python3 persona_chat.py
+        ;;
+    6)
         echo -e "${YELLOW}👋 再见！${NC}"
         exit 0
         ;;

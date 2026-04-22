@@ -5,7 +5,8 @@ class Config:
     text_datasets = [
         "Open-Orca/OpenOrca",
         "GAIR/MegaScience",
-        "my_local_data.txt"   # 直接写文件名，表示项目当前目录下的文件
+        "my_local_data.txt",   # 直接写文件名，表示项目当前目录下的文件
+         "distillation.txt"
     ]
     max_samples_per_dataset = 3000
     max_seq_len = 512

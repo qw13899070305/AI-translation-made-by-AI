@@ -2,12 +2,10 @@
 # 我的专属 AI 助手 - Windows PowerShell 启动脚本（完整版）
 # ============================================
 
-# 设置控制台编码为 UTF-8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $scriptDir
 
-# 颜色定义函数
 function Write-ColorLine($text, $color) {
     Write-Host $text -ForegroundColor $color
 }
@@ -81,8 +79,9 @@ Write-Host "  1) Web 界面 (Gradio) - 推荐，支持图文和 RAG"
 Write-Host "  2) 命令行对话 (CLI)"
 Write-Host "  3) API 后端服务 (FastAPI) - 供手机端调用"
 Write-Host "  4) 仅测试 RAG 模块"
-Write-Host "  5) 退出"
-$choice = Read-Host "输入数字 (1-5)"
+Write-Host "  5) 人设对话模式 (Persona Chat)"
+Write-Host "  6) 退出"
+$choice = Read-Host "输入数字 (1-6)"
 
 switch ($choice) {
     '1' {
@@ -110,6 +109,10 @@ switch ($choice) {
         python -c "from rag_module import RAGModule; r = RAGModule(); print('RAG 模块加载成功！')"
     }
     '5' {
+        Write-ColorLine "🎭 启动人设对话模式..." Green
+        python persona_chat.py
+    }
+    '6' {
         Write-ColorLine "👋 再见！" Yellow
         exit 0
     }
