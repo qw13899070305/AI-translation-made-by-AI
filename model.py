@@ -43,6 +43,7 @@ class GroupedQueryAttention(nn.Module):
         self.n_kv_heads = n_kv_heads
         self.head_dim = dim // n_heads
         self.n_rep = n_heads // n_kv_heads
+        self.max_seq_len = max_seq_len   # 保存用于缓存裁剪
         self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
         self.wk = nn.Linear(dim, n_kv_heads * self.head_dim, bias=False)
         self.wv = nn.Linear(dim, n_kv_heads * self.head_dim, bias=False)
@@ -68,19 +69,24 @@ class GroupedQueryAttention(nn.Module):
             v = torch.cat([past_v, v], dim=2)
         present_kv = (k, v) if use_cache else None
 
+        # ----- 新增：KV 缓存主动裁剪，防止内存线性增长 -----
+        if use_cache and k.shape[2] > self.max_seq_len:
+            k = k[:, :, -self.max_seq_len:, :]
+            v = v[:, :, -self.max_seq_len:, :]
+            present_kv = (k, v)  # 更新裁剪后的缓存
+
         k = k.repeat_interleave(self.n_rep, dim=1)
         v = v.repeat_interleave(self.n_rep, dim=1)
 
         att = (q @ k.transpose(-2, -1)) * (self.head_dim ** -0.5)
 
-        # ----- 修复：Mask 安全处理（结合第三方建议 + 防御性编程）-----
         if mask is not None:
             if mask.dim() == 4:
-                mask = mask[..., :T, :T]               # 裁剪到当前序列长度
+                mask = mask[..., :T, :T]
             elif mask.dim() == 2:
-                mask = mask.view(1, 1, T, T)           # 扩展为 4D
+                mask = mask.view(1, 1, T, T)
             elif mask.dim() == 3:
-                mask = mask.unsqueeze(1)               # 补充 head 维度
+                mask = mask.unsqueeze(1)
             else:
                 raise ValueError(f"Unsupported mask shape: {mask.shape}")
             att = att.masked_fill(mask == 0, float('-inf'))
@@ -106,22 +112,23 @@ class MoEFeedForward(nn.Module):
 
     def forward(self, x):
         B, T, D = x.shape
-        x_flat = x.view(-1, D)                     # [B*T, D]
-        gate_logits = self.gate(x_flat)            # [B*T, num_experts]
-        weights = F.softmax(gate_logits, dim=-1)   # [B*T, num_experts]
+        x_flat = x.view(-1, D)
+        gate_logits = self.gate(x_flat)
+        weights = F.softmax(gate_logits, dim=-1)
         topk_weights, topk_indices = torch.topk(weights, self.top_k, dim=-1)
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
 
         out = torch.zeros_like(x_flat)
-        # ----- 修复：正确的专家聚合（采用第三方更清晰的实现思路）-----
         for i, expert in enumerate(self.experts):
-            mask_i = (topk_indices == i).any(dim=-1)   # [B*T]
+            mask_i = (topk_indices == i).any(dim=-1)
             if not mask_i.any():
                 continue
-            x_i = x_flat[mask_i]                       # [num_selected, D]
-            expert_out = expert(x_i)                   # [num_selected, D]
+            x_i = x_flat[mask_i]
+            # ----- 新增：防御性空检查 -----
+            if x_i.shape[0] == 0:
+                continue
+            expert_out = expert(x_i)
 
-            # 获取每个被选中 token 对专家 i 的权重
             idx_in_topk = (topk_indices[mask_i] == i).nonzero(as_tuple=True)[1]
             weight_i = topk_weights[mask_i][torch.arange(x_i.shape[0], device=x.device), idx_in_topk]
             out[mask_i] += weight_i.unsqueeze(-1) * expert_out
@@ -172,12 +179,11 @@ class MiniChat(nn.Module):
         x = self.token_embedding(idx)
 
         if vision_embeds is not None:
-            # ----- 修复：维度安全检查 -----
             assert vision_embeds.shape[-1] == x.shape[-1], \
                 f"Vision embed dim ({vision_embeds.shape[-1]}) must match text dim ({x.shape[-1]})"
             assert vision_embeds.shape[0] == x.shape[0], "Batch size mismatch"
             x = torch.cat([vision_embeds, x], dim=1)
-            T = x.shape[1]  # 更新序列长度，保证后续 mask 裁剪正确
+            T = x.shape[1]
 
         present_kvs = [] if use_cache else None
         for i, block in enumerate(self.blocks):
