@@ -5,15 +5,18 @@ import math
 from config import Config
 
 cfg = Config()
+cfg.validate()  # 启动时校验配置合法性
 
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps=1e-6):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(dim))
         self.eps = eps
+
     def forward(self, x):
         rms = torch.sqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
         return x / rms * self.weight
+
 
 def precompute_freqs_cis(dim, end, theta=10000.0, scaling_factor=1.0):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
@@ -22,6 +25,7 @@ def precompute_freqs_cis(dim, end, theta=10000.0, scaling_factor=1.0):
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
     return freqs_cis
 
+
 def apply_rotary_emb(xq, xk, freqs_cis):
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
@@ -29,6 +33,7 @@ def apply_rotary_emb(xq, xk, freqs_cis):
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
+
 
 class GroupedQueryAttention(nn.Module):
     def __init__(self, dim, n_heads, n_kv_heads, max_seq_len):
@@ -42,27 +47,48 @@ class GroupedQueryAttention(nn.Module):
         self.wk = nn.Linear(dim, n_kv_heads * self.head_dim, bias=False)
         self.wv = nn.Linear(dim, n_kv_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(dim, dim, bias=False)
-        self.register_buffer("freqs_cis", precompute_freqs_cis(self.head_dim, max_seq_len * 2, theta=cfg.rope_theta, scaling_factor=cfg.rope_scaling_factor))
+        self.register_buffer(
+            "freqs_cis",
+            precompute_freqs_cis(
+                self.head_dim, max_seq_len * 2,
+                theta=cfg.rope_theta, scaling_factor=cfg.rope_scaling_factor
+            )
+        )
 
     def forward(self, x, mask=None, use_cache=False, past_kv=None):
         B, T, C = x.shape
-        q = self.wq(x).view(B, T, self.n_heads, self.head_dim).transpose(1,2)
-        k = self.wk(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1,2)
-        v = self.wv(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1,2)
+        q = self.wq(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        k = self.wk(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        v = self.wv(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1, 2)
         q, k = apply_rotary_emb(q, k, self.freqs_cis)
+
         if past_kv is not None:
             past_k, past_v = past_kv
             k = torch.cat([past_k, k], dim=2)
             v = torch.cat([past_v, v], dim=2)
         present_kv = (k, v) if use_cache else None
+
         k = k.repeat_interleave(self.n_rep, dim=1)
         v = v.repeat_interleave(self.n_rep, dim=1)
-        att = (q @ k.transpose(-2,-1)) * (self.head_dim ** -0.5)
+
+        att = (q @ k.transpose(-2, -1)) * (self.head_dim ** -0.5)
+
+        # ----- 修复：Mask 安全处理（结合第三方建议 + 防御性编程）-----
         if mask is not None:
-            att = att.masked_fill(mask[:,:,:T,:T]==0, float('-inf'))
+            if mask.dim() == 4:
+                mask = mask[..., :T, :T]               # 裁剪到当前序列长度
+            elif mask.dim() == 2:
+                mask = mask.view(1, 1, T, T)           # 扩展为 4D
+            elif mask.dim() == 3:
+                mask = mask.unsqueeze(1)               # 补充 head 维度
+            else:
+                raise ValueError(f"Unsupported mask shape: {mask.shape}")
+            att = att.masked_fill(mask == 0, float('-inf'))
+
         att = F.softmax(att, dim=-1)
-        out = (att @ v).transpose(1,2).contiguous().view(B, T, C)
+        out = (att @ v).transpose(1, 2).contiguous().view(B, T, C)
         return self.wo(out), present_kv
+
 
 class MoEFeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, num_experts=8, top_k=2):
@@ -71,65 +97,98 @@ class MoEFeedForward(nn.Module):
         self.top_k = top_k
         self.gate = nn.Linear(dim, num_experts, bias=False)
         self.experts = nn.ModuleList([
-            nn.Sequential(nn.Linear(dim, hidden_dim, bias=False), nn.SiLU(), nn.Linear(hidden_dim, dim, bias=False))
-            for _ in range(num_experts)
+            nn.Sequential(
+                nn.Linear(dim, hidden_dim, bias=False),
+                nn.SiLU(),
+                nn.Linear(hidden_dim, dim, bias=False)
+            ) for _ in range(num_experts)
         ])
+
     def forward(self, x):
         B, T, D = x.shape
-        x_flat = x.view(-1, D)
-        gate_logits = self.gate(x_flat)
-        weights = F.softmax(gate_logits, dim=-1)
+        x_flat = x.view(-1, D)                     # [B*T, D]
+        gate_logits = self.gate(x_flat)            # [B*T, num_experts]
+        weights = F.softmax(gate_logits, dim=-1)   # [B*T, num_experts]
         topk_weights, topk_indices = torch.topk(weights, self.top_k, dim=-1)
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+
         out = torch.zeros_like(x_flat)
+        # ----- 修复：正确的专家聚合（采用第三方更清晰的实现思路）-----
         for i, expert in enumerate(self.experts):
-            mask = (topk_indices == i).any(dim=-1)
-            if mask.any():
-                expert_out = expert(x_flat[mask])
-                weight = topk_weights[mask][topk_indices[mask] == i].unsqueeze(-1)
-                out[mask] += weight * expert_out
+            mask_i = (topk_indices == i).any(dim=-1)   # [B*T]
+            if not mask_i.any():
+                continue
+            x_i = x_flat[mask_i]                       # [num_selected, D]
+            expert_out = expert(x_i)                   # [num_selected, D]
+
+            # 获取每个被选中 token 对专家 i 的权重
+            idx_in_topk = (topk_indices[mask_i] == i).nonzero(as_tuple=True)[1]
+            weight_i = topk_weights[mask_i][torch.arange(x_i.shape[0], device=x.device), idx_in_topk]
+            out[mask_i] += weight_i.unsqueeze(-1) * expert_out
+
         return out.view(B, T, D)
+
 
 class TransformerBlock(nn.Module):
     def __init__(self, dim, n_heads, n_kv_heads, max_seq_len, use_moe=False):
         super().__init__()
         self.attn = GroupedQueryAttention(dim, n_heads, n_kv_heads, max_seq_len)
         if use_moe:
-            self.ffn = MoEFeedForward(dim, dim*4, num_experts=cfg.num_experts, top_k=cfg.top_k_experts)
+            self.ffn = MoEFeedForward(dim, dim * 4, num_experts=cfg.num_experts, top_k=cfg.top_k_experts)
         else:
-            self.ffn = nn.Sequential(nn.Linear(dim, dim*4, bias=False), nn.SiLU(), nn.Linear(dim*4, dim, bias=False))
+            self.ffn = nn.Sequential(
+                nn.Linear(dim, dim * 4, bias=False),
+                nn.SiLU(),
+                nn.Linear(dim * 4, dim, bias=False)
+            )
         self.norm1 = RMSNorm(dim)
         self.norm2 = RMSNorm(dim)
+
     def forward(self, x, mask=None, use_cache=False, past_kv=None):
         attn_out, present_kv = self.attn(self.norm1(x), mask, use_cache, past_kv)
         x = x + attn_out
         x = x + self.ffn(self.norm2(x))
         return x, present_kv
 
+
 class MiniChat(nn.Module):
-    def __init__(self, vocab_size, dim=cfg.dim, n_layers=cfg.n_layers, n_heads=cfg.n_heads, n_kv_heads=cfg.n_kv_heads, max_seq_len=cfg.max_seq_len, use_moe=cfg.use_moe):
+    def __init__(self, vocab_size, dim=cfg.dim, n_layers=cfg.n_layers,
+                 n_heads=cfg.n_heads, n_kv_heads=cfg.n_kv_heads,
+                 max_seq_len=cfg.max_seq_len, use_moe=cfg.use_moe):
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_size, dim)
-        self.blocks = nn.ModuleList([TransformerBlock(dim, n_heads, n_kv_heads, max_seq_len, use_moe) for _ in range(n_layers)])
+        self.blocks = nn.ModuleList([
+            TransformerBlock(dim, n_heads, n_kv_heads, max_seq_len, use_moe)
+            for _ in range(n_layers)
+        ])
         self.norm = RMSNorm(dim)
         self.lm_head = nn.Linear(dim, vocab_size, bias=False)
         self.max_seq_len = max_seq_len
-        mask = torch.tril(torch.ones(max_seq_len, max_seq_len)).view(1,1,max_seq_len,max_seq_len)
+        mask = torch.tril(torch.ones(max_seq_len, max_seq_len)).view(1, 1, max_seq_len, max_seq_len)
         self.register_buffer("mask", mask)
 
     def forward(self, idx, targets=None, use_cache=False, past_kvs=None, vision_embeds=None):
         B, T = idx.shape
         x = self.token_embedding(idx)
+
         if vision_embeds is not None:
+            # ----- 修复：维度安全检查 -----
+            assert vision_embeds.shape[-1] == x.shape[-1], \
+                f"Vision embed dim ({vision_embeds.shape[-1]}) must match text dim ({x.shape[-1]})"
+            assert vision_embeds.shape[0] == x.shape[0], "Batch size mismatch"
             x = torch.cat([vision_embeds, x], dim=1)
+            T = x.shape[1]  # 更新序列长度，保证后续 mask 裁剪正确
+
         present_kvs = [] if use_cache else None
         for i, block in enumerate(self.blocks):
             past_kv = past_kvs[i] if past_kvs is not None else None
             x, present_kv = block(x, self.mask, use_cache, past_kv)
             if use_cache:
                 present_kvs.append(present_kv)
+
         x = self.norm(x)
         logits = self.lm_head(x)
+
         loss = None
         if targets is not None:
             shift_logits = logits[..., :-1, :].contiguous()
@@ -139,9 +198,12 @@ class MiniChat(nn.Module):
 
     def generate(self, idx, max_new_tokens, temperature=cfg.temperature, top_k=cfg.top_k, vision_embeds=None):
         past_kvs = None
-        for _ in range(max_new_tokens):
+        for step in range(max_new_tokens):
             idx_cond = idx[:, -self.max_seq_len:]
-            logits, _, past_kvs = self.forward(idx_cond, use_cache=True, past_kvs=past_kvs, vision_embeds=vision_embeds if _ == 0 else None)
+            logits, _, past_kvs = self.forward(
+                idx_cond, use_cache=True, past_kvs=past_kvs,
+                vision_embeds=vision_embeds if step == 0 else None
+            )
             logits = logits[:, -1, :] / temperature
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))

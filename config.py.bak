@@ -5,8 +5,8 @@ class Config:
     text_datasets = [
         "Open-Orca/OpenOrca",
         "GAIR/MegaScience",
-        "my_local_data.txt",
-        "distillation.txt"
+        "my_local_data.txt",   # 直接写文件名，表示项目当前目录下的文件
+         "distillation.txt"
     ]
     max_samples_per_dataset = 3000
     max_seq_len = 512
@@ -66,14 +66,3 @@ class Config:
     # ========== 生成 ==========
     temperature = 0.8
     top_k = 50
-
-    # ----- 新增：参数合法性校验 -----
-    def validate(self):
-        assert self.dim % self.n_heads == 0, \
-            f"dim ({self.dim}) 必须能被 n_heads ({self.n_heads}) 整除"
-        assert self.n_heads % self.n_kv_heads == 0, \
-            f"n_heads ({self.n_heads}) 必须能被 n_kv_heads ({self.n_kv_heads}) 整除"
-        assert self.max_seq_len > 0, "max_seq_len 必须为正数"
-        if self.use_moe:
-            assert self.num_experts >= self.top_k_experts, \
-                f"num_experts ({self.num_experts}) 必须 >= top_k_experts ({self.top_k_experts})"
