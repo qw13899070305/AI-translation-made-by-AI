@@ -27,7 +27,14 @@ if cfg.use_lora:
     print("已应用 LoRA，仅训练 LoRA 参数。")
 
 optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=cfg.learning_rate)
-train_loader = get_dataloader()
+
+# 数据加载：这里简化起见，使用同一个 dataloader 做演示
+# 实际项目中建议用 train/val split
+train_loader = get_dataloader(batch_size=cfg.batch_size)
+
+best_loss = float('inf')
+patience = 2
+no_improve = 0
 
 for epoch in range(1, cfg.epochs+1):
     model.train()
@@ -44,12 +51,27 @@ for epoch in range(1, cfg.epochs+1):
         pbar.set_postfix({"loss": f"{loss.item():.4f}"})
     avg_loss = total_loss / len(train_loader)
     print(f"Epoch {epoch} 平均损失: {avg_loss:.4f}")
-    if epoch % cfg.save_every == 0:
-        if cfg.use_lora:
-            save_path = f"{cfg.lora_checkpoint_dir}/lora_epoch_{epoch}.pt"
-            lora_state = {k: v for k, v in model.state_dict().items() if 'lora_' in k}
-            torch.save(lora_state, save_path)
-        else:
-            save_path = f"{cfg.checkpoint_dir}/epoch_{epoch}.pt"
-            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'loss': avg_loss}, save_path)
-        print(f"已保存检查点到 {save_path}")
+
+    # 简单早停逻辑
+    if avg_loss < best_loss:
+        best_loss = avg_loss
+        no_improve = 0
+        if epoch % cfg.save_every == 0:
+            if cfg.use_lora:
+                save_path = f"{cfg.lora_checkpoint_dir}/lora_epoch_{epoch}.pt"
+                lora_state = {k: v for k, v in model.state_dict().items() if 'lora_' in k}
+                torch.save(lora_state, save_path)
+            else:
+                save_path = f"{cfg.checkpoint_dir}/epoch_{epoch}.pt"
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'loss': avg_loss
+                }, save_path)
+            print(f"已保存检查点到 {save_path}")
+    else:
+        no_improve += 1
+        if no_improve >= patience:
+            print(f"早停触发，在 epoch {epoch} 停止训练")
+            break
