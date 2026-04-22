@@ -1,11 +1,9 @@
-# persona_chat.py —— 独立人设对话工具，不修改任何现有文件
 import torch
 import sentencepiece as spm
-from config import Config
-from model import MiniChat
-from utils import format_chat_prompt
 import os
 import glob
+from config import Config
+from model import MiniChat
 
 # 读取人设文件
 persona_file = "persona.txt"
@@ -17,27 +15,40 @@ else:
     PERSONA = "你是一个有帮助的助手。"
     print("⚠️ 未找到 persona.txt，使用默认人设。")
 
-# 自定义提示模板（融入人设）
 def persona_format_prompt(instruction):
     return f"{PERSONA}\n### 用户: {instruction}\n### 助手: "
 
-# 加载模型和分词器（与 chat_cli.py 完全相同的逻辑）
 cfg = Config()
 device = cfg.device
 
+# ---------- 分词器加载（带错误处理） ----------
 sp = spm.SentencePieceProcessor()
-sp.load(f"tokenizer/{cfg.tokenizer_prefix}.model")
+tokenizer_path = f"tokenizer/{cfg.tokenizer_prefix}.model"
+if not os.path.exists(tokenizer_path):
+    print(f"❌ 分词器文件不存在: {tokenizer_path}")
+    print("请先运行: python tokenizer_train.py")
+    exit(1)
+try:
+    sp.load(tokenizer_path)
+except Exception as e:
+    print(f"❌ 分词器加载失败: {e}")
+    exit(1)
 vocab_size = sp.get_piece_size()
 
+# ---------- 模型加载（带容错） ----------
 model = MiniChat(vocab_size).to(device)
 ckpts = glob.glob(f"{cfg.checkpoint_dir}/*.pt")
 if ckpts:
     latest = max(ckpts, key=os.path.getctime)
-    checkpoint = torch.load(latest, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    print(f"已加载检查点: {latest}")
+    try:
+        checkpoint = torch.load(latest, map_location=device)
+        state_dict = checkpoint.get('model_state_dict', checkpoint)
+        model.load_state_dict(state_dict, strict=False)
+        print(f"✅ 已加载检查点: {latest}")
+    except Exception as e:
+        print(f"⚠️ 检查点加载失败: {e}，使用随机初始化模型")
 else:
-    print("警告：未找到检查点，使用随机初始化模型。")
+    print("⚠️ 未找到检查点，使用随机初始化模型")
 model.eval()
 
 print("\n🎭 人设对话模式（输入 quit 退出）")
@@ -55,7 +66,6 @@ while True:
         output_ids = model.generate(input_ids, max_new_tokens=200)
     response_ids = output_ids[0, input_ids.shape[1]:].tolist()
     response = sp.decode(response_ids)
-    # 清理可能残留的提示格式
     if "### 助手:" in response:
         response = response.split("### 助手:")[-1].strip()
     print(f"AI: {response}")
