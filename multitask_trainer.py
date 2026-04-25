@@ -56,7 +56,8 @@ class MultiTaskTrainer:
         
         for text in batch_texts:
             input_ids, targets = self.prepare_sample(text, task_type)
-            _, loss, _ = self.model(input_ids, targets=targets)
+            # 修复：4 个返回值
+            _, loss, _, _ = self.model(input_ids, targets=targets)
             weighted_loss = self.task_weights[task_type] * loss
             
             self.optimizer.zero_grad()
@@ -73,7 +74,6 @@ class MultiTaskTrainer:
         print(f"数据量 - LM: {len(lm_data)}, QA: {len(qa_data)}, Sentiment: {len(sentiment_data)}")
         
         for epoch in range(1, epochs+1):
-            # 混合采样训练（简化版，实际可更复杂）
             import random
             all_tasks = []
             all_tasks.extend([("lm", t) for t in lm_data])
@@ -86,20 +86,18 @@ class MultiTaskTrainer:
             for i in range(0, len(all_tasks), batch_size):
                 batch = all_tasks[i:i+batch_size]
                 batch_texts = [item[1] for item in batch]
-                task_type = batch[0][0]  # 取第一个任务类型（简化）
+                task_type = batch[0][0]
                 loss = self.train_step(batch_texts, task_type)
                 total_loss += loss
             
             avg_loss = total_loss / (len(all_tasks) // batch_size)
             print(f"Epoch {epoch}, 平均损失: {avg_loss:.4f}")
         
-        # 保存模型
         torch.save(self.model.state_dict(), "checkpoints/multitask_model.pt")
         print("✅ 多任务模型已保存到 checkpoints/multitask_model.pt")
 
 # 示例数据（实际使用时替换为真实数据）
 if __name__ == "__main__":
-    # 示例文本（你需要替换为自己的数据文件）
     lm_data = ["人工智能是计算机科学的一个分支。", "Python是一种解释型语言。"] * 100
     qa_data = ["问：什么是机器学习？答：机器学习是让计算机从数据中学习。"] * 50
     sentiment_data = ["这部电影很棒，我很喜欢。"] * 50

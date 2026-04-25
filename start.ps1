@@ -1,12 +1,8 @@
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Set-Location (Split-Path -Parent $MyInvocation.MyCommand.Definition)
 
-# 辅助函数：带颜色输出
-function Write-ColorLine($Text, $Color) {
-    Write-Host $Text -ForegroundColor $Color
-}
+function Write-ColorLine($Text, $Color) { Write-Host $Text -ForegroundColor $Color }
 
-# 检查 Python
 function Check-Python {
     if (Get-Command python -ErrorAction SilentlyContinue) {
         Write-ColorLine "✅ Python 已就绪" Green
@@ -17,7 +13,6 @@ function Check-Python {
     }
 }
 
-# 激活虚拟环境
 function Activate-Venv {
     if (Test-Path "venv\Scripts\Activate.ps1") {
         . .\venv\Scripts\Activate.ps1
@@ -30,7 +25,6 @@ function Activate-Venv {
     }
 }
 
-# 检查 PyTorch
 function Check-PyTorch {
     python -c "import torch" 2>$null
     if ($?) {
@@ -43,7 +37,6 @@ function Check-PyTorch {
     }
 }
 
-# 检查分词器
 function Check-Tokenizer {
     if (Test-Path "tokenizer\our_bpe.model") {
         Write-ColorLine "✅ 分词器已存在" Green
@@ -54,26 +47,13 @@ function Check-Tokenizer {
     }
 }
 
-# 检查模型
 function Check-Model {
     $ckpt = (Get-ChildItem "checkpoints\*.pt" -ErrorAction SilentlyContinue).Count
     $lora = (Get-ChildItem "lora_weights\*.pt" -ErrorAction SilentlyContinue).Count
-
-    if ($ckpt -gt 0 -or $lora -gt 0) {
-        Write-ColorLine "✅ 已找到模型检查点" Green
-        return
-    }
-
-    Write-ColorLine "⚠️  未找到任何模型检查点" Yellow
-    $answer = Read-Host "是否立即开始训练模型？(y/n)"
-    if ($answer -match '^[Yy]') {
-        python train.py
-    } else {
-        Write-ColorLine "⚠️  将使用随机初始化模型（效果会很差）" Yellow
-    }
+    if ($ckpt -gt 0 -or $lora -gt 0) { return $true }
+    return $false
 }
 
-# 独立工具菜单（已扩展）
 function Show-ToolsMenu {
     do {
         Write-Host ""
@@ -88,7 +68,6 @@ function Show-ToolsMenu {
         Write-Host "  8) 持续学习训练"
         Write-Host "  9) 返回主菜单"
         $choice = Read-Host "请输入数字 (1-9)"
-
         switch ($choice) {
             '1' { python web_search.py }
             '2' { python export_history.py }
@@ -116,21 +95,32 @@ Check-Python
 Activate-Venv
 Check-PyTorch
 Check-Tokenizer
-Check-Model
+
+if (-not (Check-Model)) {
+    Write-ColorLine "⚠️  未找到任何模型检查点" Yellow
+    Write-ColorLine "💡 建议：选择 0 进入配置中心调整参数，然后选 6 训练模型" Yellow
+}
 
 do {
     Write-Host ""
     Write-ColorLine "请选择启动模式:" Blue
-    Write-Host "  1) Web 界面 (Gradio) - 推荐"
-    Write-Host "  2) 命令行对话 (CLI)"
-    Write-Host "  3) API 后端服务 (FastAPI)"
-    Write-Host "  4) 测试 RAG 模块"
-    Write-Host "  5) 人设对话模式"
-    Write-Host "  6) 🧰 独立工具"
-    Write-Host "  7) 退出"
-    $mainChoice = Read-Host "请输入数字 (1-7)"
+    Write-Host "  0) 🛠️  配置管理中心（建议训练前先配置）"
+    Write-Host "  1) 🚀 启动 Web 界面"
+    Write-Host "  2) 💬 启动命令行对话"
+    Write-Host "  3) 🌐 启动 API 后端服务"
+    Write-Host "  4) 📚 测试 RAG 模块"
+    Write-Host "  5) 🎭 启动人设对话模式"
+    Write-Host "  6) 📦 训练模型"
+    Write-Host "  7) 🔧 训练分词器"
+    Write-Host "  8) 🧰 独立工具"
+    Write-Host "  9) 👋 退出"
+    $mainChoice = Read-Host "请输入数字 (0-9)"
 
     switch ($mainChoice) {
+        '0' {
+            Write-ColorLine "🛠️  启动配置管理中心..." Green
+            python config_manager.py
+        }
         '1' {
             Write-ColorLine "🚀 正在启动 Web 界面..." Green
             python chat_web.py
@@ -163,9 +153,25 @@ do {
             break
         }
         '6' {
-            Show-ToolsMenu
+            if (Check-Model) {
+                Write-ColorLine "⚠️  已有模型检查点，继续训练将覆盖旧模型。确认？(y/n)" Yellow
+                $confirm = Read-Host
+                if ($confirm -match '^[Yy]') {
+                    python train.py
+                }
+            } else {
+                Write-ColorLine "📦 开始训练模型..." Green
+                python train.py
+            }
         }
         '7' {
+            Write-ColorLine "🔧 训练分词器..." Green
+            python tokenizer_train.py
+        }
+        '8' {
+            Show-ToolsMenu
+        }
+        '9' {
             Write-ColorLine "👋 再见！" Yellow
             exit 0
         }

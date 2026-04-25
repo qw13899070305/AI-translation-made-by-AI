@@ -4,19 +4,12 @@ set -e
 # ============================================
 # 颜色定义
 # ============================================
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # 无色
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
-# ============================================
-# 1. 初始化：进入脚本所在目录
-# ============================================
 cd "$(dirname "$0")"
 
 # ============================================
-# 2. 环境检查函数（每个函数只做一件事）
+# 环境检查函数
 # ============================================
 
 check_python() {
@@ -41,8 +34,7 @@ activate_venv() {
 
 check_pytorch() {
     if python3 -c "import torch" 2>/dev/null; then
-        local torch_version=$(python3 -c "import torch; print(torch.__version__)")
-        echo -e "${GREEN}✅ PyTorch 已安装 (版本 ${torch_version})${NC}"
+        echo -e "${GREEN}✅ PyTorch 已安装 (版本 $(python3 -c "import torch; print(torch.__version__)"))${NC}"
     else
         echo -e "${RED}❌ PyTorch 未安装，请运行: pip install -r requirements.txt${NC}"
         exit 1
@@ -62,40 +54,31 @@ check_tokenizer() {
 check_model() {
     local ckpt_count=$(find checkpoints -name "*.pt" 2>/dev/null | wc -l)
     local lora_count=$(find lora_weights -name "*.pt" 2>/dev/null | wc -l)
-
     if [ $ckpt_count -gt 0 ] || [ $lora_count -gt 0 ]; then
-        echo -e "${GREEN}✅ 已找到模型检查点${NC}"
         return 0
     fi
-
-    echo -e "${YELLOW}⚠️  未找到任何模型检查点${NC}"
-    read -p "是否立即开始训练模型？(y/n): " answer
-    if [[ "$answer" =~ ^[Yy]$ ]]; then
-        python3 train.py
-    else
-        echo -e "${YELLOW}⚠️  将使用随机初始化模型（对话效果会很差）${NC}"
-    fi
+    return 1
 }
 
 # ============================================
-# 3. 主菜单显示
+# 主菜单
 # ============================================
 show_main_menu() {
     echo ""
     echo -e "${BLUE}请选择启动模式:${NC}"
-    echo "  1) Web 界面 (Gradio) - 推荐"
-    echo "  2) 命令行对话 (CLI)"
-    echo "  3) API 后端服务 (FastAPI)"
-    echo "  4) 测试 RAG 模块"
-    echo "  5) 人设对话模式"
-    echo "  6) 🧰 独立工具"
-    echo "  7) 退出"
+    echo "  0) 🛠️  配置管理中心（建议训练前先配置）"
+    echo "  1) 🚀 启动 Web 界面"
+    echo "  2) 💬 启动命令行对话"
+    echo "  3) 🌐 启动 API 后端服务"
+    echo "  4) 📚 测试 RAG 模块"
+    echo "  5) 🎭 启动人设对话模式"
+    echo "  6) 📦 训练模型"
+    echo "  7) 🔧 训练分词器"
+    echo "  8) 🧰 独立工具"
+    echo "  9) 👋 退出"
     echo ""
 }
 
-# ============================================
-# 4. 独立工具子菜单（已扩展新工具）
-# ============================================
 run_tools_menu() {
     while true; do
         echo ""
@@ -129,7 +112,7 @@ run_tools_menu() {
 }
 
 # ============================================
-# 5. 主流程（先执行检查，再进入菜单循环）
+# 主流程
 # ============================================
 main() {
     echo -e "${BLUE}========================================${NC}"
@@ -140,13 +123,22 @@ main() {
     activate_venv
     check_pytorch
     check_tokenizer
-    check_model
+
+    # 引导建议：如果没有模型检查点，提示用户先配置后训练
+    if ! check_model; then
+        echo -e "${YELLOW}⚠️  未找到任何模型检查点${NC}"
+        echo -e "${YELLOW}💡 建议：选择 0 进入配置中心调整参数，然后选 6 训练模型${NC}"
+    fi
 
     while true; do
         show_main_menu
-        read -p "请输入数字 (1-7): " choice
+        read -p "请输入数字 (0-9): " choice
 
         case $choice in
+            0)
+                echo -e "${GREEN}🛠️  启动配置管理中心...${NC}"
+                python3 config_manager.py
+                ;;
             1)
                 echo -e "${GREEN}🚀 正在启动 Web 界面...${NC}"
                 python3 chat_web.py
@@ -178,9 +170,25 @@ main() {
                 break
                 ;;
             6)
-                run_tools_menu
+                if check_model; then
+                    echo -e "${YELLOW}⚠️  已有模型检查点，继续训练将覆盖旧模型。确认？(y/n)${NC}"
+                    read -r confirm
+                    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                        python3 train.py
+                    fi
+                else
+                    echo -e "${GREEN}📦 开始训练模型...${NC}"
+                    python3 train.py
+                fi
                 ;;
             7)
+                echo -e "${GREEN}🔧 训练分词器...${NC}"
+                python3 tokenizer_train.py
+                ;;
+            8)
+                run_tools_menu
+                ;;
+            9)
                 echo -e "${YELLOW}👋 再见！${NC}"
                 exit 0
                 ;;
@@ -191,5 +199,4 @@ main() {
     done
 }
 
-# 启动主函数
 main

@@ -62,7 +62,8 @@ class ContinualTrainer:
                 for text in batch_texts:
                     input_ids = self.encode_text(text).unsqueeze(0).to(device)
                     targets = input_ids.clone()
-                    _, loss, _ = self.model(input_ids, targets=targets)
+                    # 修复：4 个返回值（忽略 mtp_predictions）
+                    _, loss, _, _ = self.model(input_ids, targets=targets)
                     new_loss += loss
                 new_loss /= len(batch_texts)
                 
@@ -73,7 +74,8 @@ class ContinualTrainer:
                     for text in replay_texts:
                         input_ids = self.encode_text(text).unsqueeze(0).to(device)
                         targets = input_ids.clone()
-                        _, loss, _ = self.model(input_ids, targets=targets)
+                        # 修复：4 个返回值
+                        _, loss, _, _ = self.model(input_ids, targets=targets)
                         replay_loss += loss
                     replay_loss /= len(replay_texts)
                 

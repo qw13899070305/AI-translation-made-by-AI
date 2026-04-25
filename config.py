@@ -27,9 +27,35 @@ class Config:
     use_moe = True
     num_experts = 8
     top_k_experts = 2
+
+    # ---------- MoE 增强 ----------
+    moe_use_sigmoid_gate = True
+    moe_num_shared_experts = 1
+    moe_n_groups = 2
+    moe_topk_group = 2
+    moe_norm_topk_prob = True
+    moe_routed_scaling_factor = 1.0
+    moe_use_aux_loss_free = True
+
     max_seq_len = 512
     rope_theta = 10000.0
     rope_scaling_factor = 1.0
+
+    # ---------- 注意力类型 ----------
+    attn_type = "hybrid"              # "gqa" | "mla" | "swa" | "hybrid"
+    swa_window_size = 128             # SWA 滑动窗口大小（参考 MiMo-V2-Flash）
+    swa_hybrid_ratio = 5              # SWA:Global 混合比例（MiMo-V2-Flash为5:1）
+    mla_q_lora_rank = 192
+    mla_kv_lora_rank = 128
+    mla_qk_rope_head_dim = 32
+    mla_v_head_dim = 64
+    use_partial_rope = True           # 64-dim partial RoPE
+    partial_rope_dim = 64
+
+    # ---------- MTP 多 Token 预测 ----------
+    use_mtp = False                   # 是否启用 MTP
+    mtp_num_layers = 3                # MTP 层数
+    mtp_hidden_dim = 512              # MTP 隐藏维度
 
     # ========== 多模态 ==========
     vision_encoder_name = "openai/clip-vit-base-patch32"
@@ -44,7 +70,7 @@ class Config:
     lora_r = 8
     lora_alpha = 32
     lora_dropout = 0.1
-    lora_target_modules = ["wq", "wv"]
+    lora_target_modules = ["wq", "wv", "kv_compress", "k_proj", "v_proj"]
 
     # ========== 训练 ==========
     batch_size = 8
@@ -52,6 +78,7 @@ class Config:
     epochs = 5
     grad_clip = 1.0
     save_every = 1
+    num_workers = 16            # 数据加载子进程数
     checkpoint_dir = "./checkpoints"
     lora_checkpoint_dir = "./lora_weights"
 
@@ -68,7 +95,6 @@ class Config:
     temperature = 0.8
     top_k = 50
 
-    # ----- 新增：参数合法性校验 -----
     def validate(self):
         assert self.dim % self.n_heads == 0, \
             f"dim ({self.dim}) 必须能被 n_heads ({self.n_heads}) 整除"
@@ -78,3 +104,11 @@ class Config:
         if self.use_moe:
             assert self.num_experts >= self.top_k_experts, \
                 f"num_experts ({self.num_experts}) 必须 >= top_k_experts ({self.top_k_experts})"
+            if self.moe_n_groups > 1:
+                assert self.num_experts % self.moe_n_groups == 0, \
+                    f"num_experts ({self.num_experts}) 必须能被 moe_n_groups ({self.moe_n_groups}) 整除"
+        if self.attn_type in ("mla",):
+            assert self.mla_q_lora_rank > 0 and self.mla_kv_lora_rank > 0, \
+                "MLA 参数必须为正数"
+        if self.attn_type in ("swa", "hybrid"):
+            assert self.swa_window_size > 0, "SWA 窗口大小必须为正数"
