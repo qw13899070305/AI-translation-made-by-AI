@@ -69,7 +69,7 @@ class GroupedQueryAttention(nn.Module):
 
         att = (q @ k.transpose(-2,-1)) * (self.head_dim ** -0.5)
         if mask is not None:
-            att = att.masked_fill(mask[...,:T,:T] == 0, float('-inf'))
+            att = att.masked_fill(mask[...,:T,:k.shape[2]] == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
         if torch.isnan(att).any():
             att = torch.ones_like(att) / att.shape[-1]
@@ -127,7 +127,7 @@ class SlidingWindowAttention(nn.Module):
 
         # 叠加因果掩码
         if mask is not None:
-            att = att.masked_fill(mask[...,:T,:T_kv] == 0, float('-inf'))
+            att = att.masked_fill(mask[...,:T,:k.shape[2]] == 0, float('-inf'))
 
         att = F.softmax(att, dim=-1)
         if torch.isnan(att).any():
@@ -181,7 +181,7 @@ class MultiHeadLatentAttention(nn.Module):
         q, k, v = q.transpose(1,2), k.transpose(1,2), v.transpose(1,2)
         att = (q @ k.transpose(-2,-1)) * (self.qk_rope_head_dim ** -0.5)
         if mask is not None:
-            att = att.masked_fill(mask[...,:T,:T_total] == 0, float('-inf'))
+            att = att.masked_fill(mask[...,:T,:k.shape[2]] == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
         if torch.isnan(att).any():
             att = torch.ones_like(att) / att.shape[-1]
