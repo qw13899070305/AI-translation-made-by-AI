@@ -11,14 +11,23 @@
 import os
 import sys
 import shutil
-import subprocess
+import re
+import importlib
 from config import Config
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
 BACKUP_FILE = CONFIG_FILE + ".bak"
 
+# ==================== 刷新配置模块缓存 ====================
+def refresh_config():
+    """强制重新加载 config 模块，以获取最新的参数值"""
+    import config
+    importlib.reload(config)
+    # 重新绑定全局的 Config 类
+    global Config
+    from config import Config
+
 # ==================== 所有可配置参数定义 ====================
-# (参数名, 默认值, 说明) 用于专家模式展示和 set_any_param 时的类型转换
 
 ALL_CONFIG_PARAMS = [
     # 数据集
@@ -99,10 +108,12 @@ ALL_CONFIG_PARAMS = [
 # ==================== 工具函数 ====================
 
 def read_config_lines():
+    """读取 config.py 的所有行"""
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         return f.readlines()
 
 def write_config_lines(lines):
+    """写回 config.py，同时自动备份旧文件"""
     if os.path.exists(CONFIG_FILE):
         shutil.copy(CONFIG_FILE, BACKUP_FILE)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -112,67 +123,47 @@ def set_config_param(key, value):
     """修改 config.py 中指定的参数"""
     lines = read_config_lines()
     found = False
+
+    # 处理不同的值类型，确保写入文件时格式正确
+    if isinstance(value, str):
+        new_val_str = f'"{value}"'
+    elif isinstance(value, bool):
+        new_val_str = str(value)
+    elif isinstance(value, list):
+        new_val_str = str(value)
+    else:
+        new_val_str = str(value)
+
+    # 构造正则表达式：匹配 "key = 任意值"
+    pattern = re.compile(rf'^(\s*{re.escape(key)}\s*=\s*)(.+)', re.MULTILINE)
+
     for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith(f"{key} = ") or stripped.startswith(f"{key}="):
-            if isinstance(value, str):
-                lines[i] = f"    {key} = \"{value}\"\n"
-            elif isinstance(value, bool):
-                lines[i] = f"    {key} = {value}\n"
-            elif isinstance(value, list):
-                lines[i] = f"    {key} = {value}\n"
-            else:
-                lines[i] = f"    {key} = {value}\n"
+        m = pattern.match(line)
+        if m:
+            # 保留行尾注释（如果有）
+            comment = ''
+            if '#' in line:
+                comment = '  ' + line.split('#', 1)[1].strip()
+                comment = f'  # {comment}'
+            # 生成新行
+            new_line = f'{m.group(1)}{new_val_str}{comment}\n'
+            lines[i] = new_line
             found = True
             break
+
     if not found:
-        print(f"⚠️ 未找到参数 {key}")
+        print(f"⚠️ 未找到参数 {key}，请检查参数名是否正确")
         return False
+
     write_config_lines(lines)
+    refresh_config()  # 立即刷新内存中的配置
     print(f"✅ {key} → {value}")
     return True
-
-def enable_dataset(name):
-    """启用某个数据集"""
-    lines = read_config_lines()
-    inside_list = False
-    for i, line in enumerate(lines):
-        if "text_datasets = [" in line:
-            inside_list = True
-            continue
-        if inside_list and "]" in line:
-            inside_list = False
-            continue
-        if inside_list and name in line and line.strip().startswith("#"):
-            lines[i] = line.replace("#", "").replace("  ", " ")
-            if not lines[i].strip().endswith(","):
-                lines[i] = lines[i].rstrip() + ",\n"
-            write_config_lines(lines)
-            print(f"✅ 已启用数据集: {name}")
-            return
-    print(f"⚠️ 未找到数据集: {name}")
-
-def disable_dataset(name):
-    """禁用某个数据集"""
-    lines = read_config_lines()
-    inside_list = False
-    for i, line in enumerate(lines):
-        if "text_datasets = [" in line:
-            inside_list = True
-            continue
-        if inside_list and "]" in line:
-            inside_list = False
-            continue
-        if inside_list and name in line and not line.strip().startswith("#"):
-            lines[i] = "        # " + line.strip() + "\n"
-            write_config_lines(lines)
-            print(f"⏸️  已禁用数据集: {name}")
-            return
-    print(f"⚠️ 未找到数据集: {name}")
 
 # ==================== 菜单模块 ====================
 
 def auto_optimize():
+    """自动优化性能配置"""
     import multiprocessing
     import torch
     cpu_count = multiprocessing.cpu_count()
@@ -182,20 +173,26 @@ def auto_optimize():
     ans = input("是否应用？(y/n): ").strip().lower()
     if ans == "y":
         set_config_param("num_workers", recommended_workers)
+
     current_bs = getattr(Config(), "batch_size", 8)
     print(f"当前 batch_size: {current_bs}")
     print("建议：显存充足可设为 16 或 32，显存不足保持 8 或更小")
     ans = input("是否修改？(输入新值或 n): ").strip().lower()
     if ans and ans != "n":
-        set_config_param("batch_size", int(ans))
+        try:
+            set_config_param("batch_size", int(ans))
+        except:
+            print("输入无效，跳过")
+
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
         gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1024**3
         print(f"🎮 GPU: {gpu_name} ({gpu_mem:.1f} GB)")
         if gpu_mem > 8:
-            print("💡 建议开启混合精度训练 (AMP)，可在 train.py 中手动添加。")
+            print("💡 建议手动开启混合精度训练 (AMP)")
 
 def menu_performance():
+    """性能优化子菜单"""
     while True:
         print("\n⚡ 性能优化设置")
         print("  1) 自动检测硬件并推荐配置")
@@ -205,22 +202,40 @@ def menu_performance():
         print("  5) 查看当前性能参数")
         print("  0) 返回主菜单")
         choice = input("请选择: ").strip()
-        if choice == "1": auto_optimize()
+        if choice == "1":
+            auto_optimize()
         elif choice == "2":
             val = input("输入 batch_size: ").strip()
-            if val: set_config_param("batch_size", int(val))
+            if val:
+                try:
+                    set_config_param("batch_size", int(val))
+                except:
+                    print("请输入有效数字")
         elif choice == "3":
             val = input("输入 num_workers: ").strip()
-            if val: set_config_param("num_workers", int(val))
+            if val:
+                try:
+                    set_config_param("num_workers", int(val))
+                except:
+                    print("请输入有效数字")
         elif choice == "4":
             val = input("输入 epochs: ").strip()
-            if val: set_config_param("epochs", int(val))
+            if val:
+                try:
+                    set_config_param("epochs", int(val))
+                except:
+                    print("请输入有效数字")
         elif choice == "5":
+            refresh_config()
             cfg = Config()
             print(f"batch_size={cfg.batch_size}, num_workers={cfg.num_workers}, epochs={cfg.epochs}, lr={cfg.learning_rate}")
-        elif choice == "0": break
+        elif choice == "0":
+            break
+        else:
+            print("无效选择")
 
 def menu_network():
+    """网络镜像设置"""
     print("\n🌐 网络与镜像设置")
     print("  1) 设置 HuggingFace 镜像 (加速下载)")
     print("  2) 清除 HuggingFace 镜像")
@@ -228,47 +243,46 @@ def menu_network():
     choice = input("请选择: ").strip()
     if choice == "1":
         bashrc = os.path.expanduser("~/.bashrc")
-        with open(bashrc, "r") as f: content = f.read()
+        with open(bashrc, "r") as f:
+            content = f.read()
         if "HF_ENDPOINT" not in content:
             with open(bashrc, "a") as f:
                 f.write('\nexport HF_ENDPOINT=https://hf-mirror.com\n')
         print("✅ 已添加镜像到 ~/.bashrc，重启终端生效")
     elif choice == "2":
         bashrc = os.path.expanduser("~/.bashrc")
-        with open(bashrc, "r") as f: lines = f.readlines()
+        with open(bashrc, "r") as f:
+            lines = f.readlines()
         with open(bashrc, "w") as f:
             for line in lines:
-                if "HF_ENDPOINT" not in line: f.write(line)
+                if "HF_ENDPOINT" not in line:
+                    f.write(line)
         print("✅ 已清除镜像设置")
     elif choice == "3":
         val = os.environ.get("HF_ENDPOINT", "未设置")
         print(f"当前镜像: {val}")
 
 def menu_datasets():
-    while True:
-        cfg = Config()
-        print("\n📚 数据集管理")
-        for i, ds in enumerate(cfg.text_datasets):
-            print(f"  {i+1}. {ds}")
-        print("\n  a) 启用数据集  d) 禁用数据集  0) 返回")
-        c = input("请选择: ").strip()
-        if c == "0": break
-        elif c == "a":
-            name = input("数据集名: ").strip()
-            if name: enable_dataset(name)
-        elif c == "d":
-            name = input("数据集名: ").strip()
-            if name: disable_dataset(name)
+    """数据集管理"""
+    refresh_config()
+    cfg = Config()
+    print("\n📚 当前数据集列表:")
+    for i, ds in enumerate(cfg.text_datasets):
+        print(f"  {i+1}. {ds}")
+    print("\n如需修改，请使用专家模式或直接编辑 config.py")
 
 def menu_environment():
+    """环境检查"""
     import torch
     print("\n🔍 环境检查\n")
     print(f"Python: {sys.version}")
     try:
         print(f"PyTorch: {torch.__version__}")
         print(f"CUDA: {torch.cuda.is_available()}")
-        if torch.cuda.is_available(): print(f"GPU: {torch.cuda.get_device_name(0)}")
-    except: print("PyTorch 未安装")
+        if torch.cuda.is_available():
+            print(f"GPU: {torch.cuda.get_device_name(0)}")
+    except:
+        print("PyTorch 未安装")
     print(f"虚拟环境: {'是' if sys.prefix != sys.base_prefix else '否'}")
     tokenizer_path = "tokenizer/our_bpe.model"
     print(f"分词器: {'存在' if os.path.exists(tokenizer_path) else '缺失 (运行 tokenizer_train.py)'}")
@@ -279,6 +293,7 @@ def menu_environment():
     print(f"磁盘可用: {free/1024**3:.1f} GB")
 
 def menu_clean():
+    """清理缓存"""
     print("\n🧹 清理缓存")
     print("  1) HuggingFace 缓存")
     print("  2) __pycache__ 目录")
@@ -287,94 +302,105 @@ def menu_clean():
     if c == "1":
         d = os.path.expanduser("~/.cache/huggingface")
         if os.path.exists(d):
-            size = sum(os.path.getsize(os.path.join(r,f)) for r,_,fs in os.walk(d) for f in fs)/1024**3
-            if input(f"确认删除 {size:.1f}GB 缓存？(y/n): ") == "y":
-                shutil.rmtree(d); print("✅ 已清理")
+            if input(f"确认删除缓存？(y/n): ") == "y":
+                shutil.rmtree(d)
+                print("✅ 已清理")
     elif c == "2":
         n = 0
-        for r,ds,_ in os.walk("."):
+        for r, ds, _ in os.walk("."):
             if "__pycache__" in ds:
-                shutil.rmtree(os.path.join(r,"__pycache__")); n+=1
+                shutil.rmtree(os.path.join(r, "__pycache__"))
+                n += 1
         print(f"✅ 清理 {n} 个")
     elif c == "3":
         if input("⚠️ 确认删除所有 .pt 文件？(y/n): ") == "y":
-            for r,_,fs in os.walk("."):
+            for r, _, fs in os.walk("."):
                 for f in fs:
-                    if f.endswith(".pt"): os.remove(os.path.join(r,f))
+                    if f.endswith(".pt"):
+                        os.remove(os.path.join(r, f))
             print("✅ 已清理")
 
-def expert_menu():
-    while True:
-        print("\n🧠 专家模式")
-        print("  1) 查看全部参数")
-        print("  2) 直接修改参数")
-        print("  0) 返回")
-        c = input(": ").strip()
-        if c == "0": break
-        elif c == "1":
-            cfg = Config()
-            for key, default, desc in ALL_CONFIG_PARAMS:
-                val = getattr(cfg, key, "N/A")
-                print(f"  {key:<30} = {str(val):<20} # {desc}")
-        elif c == "2":
-            key = input("参数名: ").strip()
-            if not key: continue
+def manual_edit():
+    """直接修改参数（专家模式）"""
+    key = input("参数名: ").strip()
+    if not key:
+        return
+    try:
+        refresh_config()
+        cur = getattr(Config(), key)
+    except:
+        print(f"❌ 参数 {key} 不存在")
+        return
+    print(f"当前值: {cur}")
+    val = input("新值: ").strip()
+    if not val:
+        return
+
+    # 尝试推断值的类型
+    info = [x for x in ALL_CONFIG_PARAMS if x[0] == key]
+    if info:
+        t = type(info[0][1])
+        if t == bool:
+            val = val.lower() in ("true", "1", "yes", "on")
+        elif t == list:
+            val = [x.strip() for x in val.split(",")]
+        else:
             try:
-                cur = getattr(Config(), key)
+                val = t(val)
             except:
-                print(f"❌ 参数 {key} 不存在")
-                continue
-            print(f"当前值: {cur}")
-            val = input("新值: ").strip()
-            if not val: continue
-            # 类型转换
-            info = [x for x in ALL_CONFIG_PARAMS if x[0]==key]
-            if info:
-                t = type(info[0][1])
-                if t == bool: val = val.lower() in ("true","1","yes","on")
-                elif t == list:
-                    val = [x.strip() for x in val.split(",")]
-                else:
-                    try: val = t(val)
-                    except: pass
-            else:
-                try: val = int(val)
-                except:
-                    try: val = float(val)
-                    except:
-                        if val.lower() in ("true","false"): val = val.lower()=="true"
-            set_config_param(key, val)
+                pass
+    else:
+        try:
+            val = int(val)
+        except:
+            try:
+                val = float(val)
+            except:
+                if val.lower() in ("true", "false"):
+                    val = val.lower() == "true"
+    set_config_param(key, val)
 
 # ==================== 主菜单 ====================
 
 def main_menu():
     while True:
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("   🛠️  项目配置管理中心")
-        print("="*50)
+        print("=" * 50)
         print("  1) ⚡ 性能优化")
         print("  2) 🌐 网络镜像")
         print("  3) 📚 数据集管理")
         print("  4) 🔍 环境检查")
         print("  5) 🧹 清理缓存")
-        print("  6) 📋 查看全部参数 (专家模式)")
-        print("  7) ✏️  直接修改参数 (专家模式)")
-        print("  8) 🔄 配置校验")
+        print("  6) 📋 查看全部参数")
+        print("  7) ✏️  直接修改参数")
+        print("  8) 🔄 刷新配置")
+        print("  9) 🔄 配置校验")
         print("  0) 退出")
         c = input("\n请选择: ").strip()
-        if c == "1": menu_performance()
-        elif c == "2": menu_network()
-        elif c == "3": menu_datasets()
-        elif c == "4": menu_environment()
-        elif c == "5": menu_clean()
+        if c == "1":
+            menu_performance()
+        elif c == "2":
+            menu_network()
+        elif c == "3":
+            menu_datasets()
+        elif c == "4":
+            menu_environment()
+        elif c == "5":
+            menu_clean()
         elif c == "6":
+            refresh_config()
             cfg = Config()
             for key, default, desc in ALL_CONFIG_PARAMS:
                 val = getattr(cfg, key, "N/A")
                 print(f"  {key:<30} = {str(val):<20} # {desc}")
         elif c == "7":
-            expert_menu()
+            manual_edit()
         elif c == "8":
+            refresh_config()
+            print("✅ 配置已刷新")
+        elif c == "9":
+            refresh_config()
             try:
                 Config().validate()
                 print("✅ 配置合法")
@@ -388,9 +414,13 @@ def main_menu():
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        if sys.argv[1] == "auto": auto_optimize()
-        elif sys.argv[1] == "check": menu_environment()
-        elif sys.argv[1] == "clean": menu_clean()
-        else: print("用法: python config_manager.py [auto|check|clean]")
+        if sys.argv[1] == "auto":
+            auto_optimize()
+        elif sys.argv[1] == "check":
+            menu_environment()
+        elif sys.argv[1] == "clean":
+            menu_clean()
+        else:
+            print("用法: python config_manager.py [auto|check|clean]")
     else:
         main_menu()
