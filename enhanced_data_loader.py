@@ -1,7 +1,7 @@
-# enhanced_data_loader.py —— 多源数据自动下载与导出
+# enhanced_data_loader.py —— 多源数据自动下载与导出（追加模式）
 import os
 import sys
-from datasets import load_dataset, concatenate_datasets
+from datasets import load_dataset
 
 # 数据源配置（按需增删）
 DATA_SOURCES = [
@@ -10,13 +10,6 @@ DATA_SOURCES = [
         "subset": "20220301.zh",
         "split": "train",
         "desc": "维基百科中文",
-        "max_samples": 30000,
-    },
-    {
-        "name": "wikitext",
-        "subset": "wikitext-103-v1",
-        "split": "train",
-        "desc": "英文维基文本",
         "max_samples": 30000,
     },
     {
@@ -43,8 +36,15 @@ DATA_SOURCES = [
 ]
 
 def load_diverse_datasets(output_file="enhanced_data.txt"):
-    """加载多源数据集并导出为纯文本文件"""
-    all_texts = []
+    """加载多源数据集并追加到纯文本文件中"""
+    # 先读取文件中已有的内容，用于去重
+    existing_texts = set()
+    if os.path.exists(output_file):
+        with open(output_file, "r", encoding="utf-8") as f:
+            for line in f:
+                existing_texts.add(line.strip())
+
+    new_count = 0
 
     for src in DATA_SOURCES:
         try:
@@ -58,7 +58,8 @@ def load_diverse_datasets(output_file="enhanced_data.txt"):
             if len(ds) > src["max_samples"]:
                 ds = ds.select(range(src["max_samples"]))
             
-            # 提取文本字段
+            # 准备一批新文本，准备追加写入
+            new_texts = []
             for sample in ds:
                 text = None
                 # 根据不同数据集的字段名提取
@@ -74,25 +75,30 @@ def load_diverse_datasets(output_file="enhanced_data.txt"):
                     continue
                 
                 if text:
-                    # 去除换行符，每行一个样本
                     text = text.replace("\n", " ").strip()
-                    if text:
-                        all_texts.append(text)
+                    # 去重：只添加文件中不存在的新内容
+                    if text and text not in existing_texts:
+                        new_texts.append(text)
+                        existing_texts.add(text)  # 加入集合，防止本次加载的内部重复
             
-            print(f"   ✅ 提取 {len(all_texts)} 条累计")
+            # 追加写入文件
+            if new_texts:
+                with open(output_file, "a", encoding="utf-8") as f:
+                    for text in new_texts:
+                        f.write(text + "\n")
+                new_count += len(new_texts)
+                print(f"   ✅ 新增 {len(new_texts)} 条，累计 {len(existing_texts)} 条")
+            else:
+                print(f"   ⏭️ 无新内容，跳过")
+                
         except Exception as e:
             print(f"   ⚠️ 加载失败: {e}")
 
-    if not all_texts:
-        print("❌ 没有提取到任何文本，请检查网络或数据集")
-        sys.exit(1)
-
-    with open(output_file, "w", encoding="utf-8") as f:
-        for text in all_texts:
-            f.write(text + "\n")
-
-    print(f"\n🎉 增强数据已保存到 {output_file}，共 {len(all_texts)} 条")
-    print("📌 现在你可以在 config.py 的 text_datasets 中添加 'enhanced_data.txt' 来使用这些数据。")
+    if new_count == 0:
+        print("❌ 没有提取到任何新文本，文件保持不变")
+    else:
+        print(f"\n🎉 成功追加 {new_count} 条新数据到 {output_file}")
+        print("📌 config.py 的 text_datasets 中已包含 'enhanced_data.txt'，可直接训练。")
 
 if __name__ == "__main__":
     load_diverse_datasets()
