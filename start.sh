@@ -125,7 +125,11 @@ check_pytorch() {
 }
 check_tokenizer() {
     if [ -f "tokenizer/our_bpe.model" ]; then echo -e "${GREEN}$MSG_TOKENIZER_OK${NC}"
-    else echo -e "${YELLOW}$MSG_TOKENIZER_MISSING${NC}"; python3 tokenizer_train.py; echo -e "${GREEN}$MSG_TOKENIZER_DONE${NC}"; fi
+    else
+        echo -e "${YELLOW}$MSG_TOKENIZER_MISSING${NC}"
+        python3 tokenizer_train.py
+        echo -e "${GREEN}$MSG_TOKENIZER_DONE${NC}"
+    fi
 }
 check_model() {
     local ckpt=$(find checkpoints -name "*.pt" 2>/dev/null | wc -l)
@@ -173,7 +177,10 @@ echo -e "${GREEN}   🤖 My Own AI Assistant / 我的专属 AI 助手${NC}"
 echo -e "${BLUE}========================================${NC}"
 check_python; activate_venv; check_pytorch; check_tokenizer
 
-if ! check_model; then echo -e "${YELLOW}$MSG_NO_CHECKPOINT${NC}"; echo -e "${YELLOW}$MSG_SUGGEST_CONFIG${NC}"; fi
+if ! check_model; then
+    echo -e "${YELLOW}$MSG_NO_CHECKPOINT${NC}"
+    echo -e "${YELLOW}$MSG_SUGGEST_CONFIG${NC}"
+fi
 
 while true; do
     echo ""
@@ -198,7 +205,15 @@ while true; do
         3) echo -e "${GREEN}$MSG_LAUNCH_API${NC}"; [ -d backend ] && [ -f backend/main.py ] && cd backend && python3 main.py || echo -e "${RED}$MSG_BACKEND_MISSING${NC}"; break ;;
         4) echo -e "${GREEN}$MSG_LAUNCH_RAG${NC}"; python3 -c "from rag_module import RAGModule; print('✅ RAG OK')"; break ;;
         5) echo -e "${GREEN}$MSG_LAUNCH_PERSONA${NC}"; python3 persona_chat.py; break ;;
-        6) if check_model; then echo -e "${YELLOW}$MSG_CONFIRM${NC}"; read -r confirm; [[ "$confirm" =~ ^[Yy]$ ]] && echo -e "${GREEN}$MSG_LAUNCH_TRAIN${NC}" && python3 train.py; fi; else echo -e "${GREEN}$MSG_LAUNCH_TRAIN${NC}"; python3 train.py; fi ;;
+        6)
+            if check_model; then
+                echo -e "${YELLOW}$MSG_CONFIRM${NC}"; read -r confirm
+                [[ "$confirm" =~ ^[Yy]$ ]] && echo -e "${GREEN}$MSG_LAUNCH_TRAIN${NC}" && python3 train.py
+            else
+                echo -e "${GREEN}$MSG_LAUNCH_TRAIN${NC}"
+                python3 train.py
+            fi
+            ;;
         7) echo -e "${GREEN}$MSG_LAUNCH_TOKENIZER${NC}"; python3 tokenizer_train.py ;;
         8) run_tools_menu ;;
         9) echo -e "${YELLOW}$MSG_GOODBYE${NC}"; exit 0 ;;

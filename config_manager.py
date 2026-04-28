@@ -331,9 +331,13 @@ def menu_environment():
     import torch
     print(f"\n{T['env_title']}\n")
     print(f"Python: {sys.version}")
-    try: print(f"PyTorch: {torch.__version__}"); print(f"CUDA: {torch.cuda.is_available()}")
-        if torch.cuda.is_available(): print(f"GPU: {torch.cuda.get_device_name(0)}")
-    except: print("PyTorch 未安装")
+    try:
+        print(f"PyTorch: {torch.__version__}")
+        print(f"CUDA: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            print(f"GPU: {torch.cuda.get_device_name(0)}")
+    except:
+        print("PyTorch 未安装")
     print(f"虚拟环境: {'是' if sys.prefix != sys.base_prefix else '否'}")
     tokenizer_path = "tokenizer/our_bpe.model"
     print(f"分词器: {'存在' if os.path.exists(tokenizer_path) else '缺失'}")
