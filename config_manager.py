@@ -6,6 +6,7 @@ from config import Config
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
 BACKUP_FILE = CONFIG_FILE + ".bak"
 
+# 多语言文本
 TEXTS = {
     "en": {
         "lang_select": "Please select language / 请选择语言:",
@@ -148,6 +149,7 @@ def refresh_config():
     global Config
     from config import Config
 
+# 参数定义（全部参数，包括最新架构参数）
 ALL_CONFIG_PARAMS = [
     ("text_datasets", ["Open-Orca/OpenOrca", "my_local_data.txt", "distillation.txt"], "训练数据集列表" if LANG=="zh" else "Training dataset list"),
     ("max_samples_per_dataset", 50000, "每个数据集最大样本数" if LANG=="zh" else "Max samples per dataset"),
@@ -173,18 +175,24 @@ ALL_CONFIG_PARAMS = [
     ("moe_use_aux_loss_free", True, "使用无辅助损失负载均衡" if LANG=="zh" else "Use auxiliary-loss-free load balancing"),
     ("rope_theta", 10000.0, "RoPE 基础角度" if LANG=="zh" else "RoPE base theta"),
     ("rope_scaling_factor", 1.0, "RoPE 缩放因子" if LANG=="zh" else "RoPE scaling factor"),
+    ("use_ntk_rope", True, "启用 NTK-RoPE" if LANG=="zh" else "Use NTK-RoPE"),
+    ("target_context_len", 2048, "NTK-RoPE 目标上下文长度" if LANG=="zh" else "NTK-RoPE target context length"),
     ("attn_type", "hybrid", "注意力类型" if LANG=="zh" else "Attention type"),
     ("swa_window_size", 128, "SWA 滑动窗口大小" if LANG=="zh" else "SWA window size"),
     ("swa_hybrid_ratio", 5, "SWA:Global 混合比例" if LANG=="zh" else "SWA:Global hybrid ratio"),
+    ("gdn_hybrid_ratio", 4, "Gated DeltaNet:GQA 混合比" if LANG=="zh" else "Gated DeltaNet:GQA ratio"),
     ("mla_q_lora_rank", 192, "MLA Q 压缩维度" if LANG=="zh" else "MLA Q LoRA rank"),
     ("mla_kv_lora_rank", 128, "MLA KV 压缩维度" if LANG=="zh" else "MLA KV LoRA rank"),
     ("mla_qk_rope_head_dim", 32, "MLA RoPE 维度" if LANG=="zh" else "MLA QK RoPE head dim"),
     ("mla_v_head_dim", 64, "MLA V 维度" if LANG=="zh" else "MLA V head dim"),
     ("use_partial_rope", True, "部分维度应用 RoPE" if LANG=="zh" else "Use partial RoPE"),
     ("partial_rope_dim", 64, "RoPE 应用维度" if LANG=="zh" else "Partial RoPE dim"),
+    ("csa_compress_ratio", 4, "CSA 压缩比" if LANG=="zh" else "CSA compress ratio"),
+    ("csa_top_k", 512, "CSA 稀疏 Top-k" if LANG=="zh" else "CSA sparse Top-k"),
     ("use_mtp", False, "是否启用 MTP" if LANG=="zh" else "Enable MTP"),
     ("mtp_num_layers", 3, "MTP 层数" if LANG=="zh" else "MTP number of layers"),
     ("mtp_hidden_dim", 512, "MTP 隐藏维度" if LANG=="zh" else "MTP hidden dimension"),
+    ("use_mtp_speculative_decode", True, "推理时使用 MTP 自投机解码" if LANG=="zh" else "Use MTP speculative decoding in generation"),
     ("vision_encoder_name", "openai/clip-vit-base-patch32", "视觉编码器" if LANG=="zh" else "Vision encoder name"),
     ("vision_embed_dim", 768, "视觉嵌入维度" if LANG=="zh" else "Vision embed dimension"),
     ("proj_dim", 384, "投影维度" if LANG=="zh" else "Projection dimension"),
@@ -202,6 +210,8 @@ ALL_CONFIG_PARAMS = [
     ("grad_clip", 1.0, "梯度裁剪阈值" if LANG=="zh" else "Gradient clip threshold"),
     ("save_every", 1, "保存频率 (epoch)" if LANG=="zh" else "Save frequency (epoch)"),
     ("num_workers", 16, "数据加载子进程数" if LANG=="zh" else "Number of data loading workers"),
+    ("use_amp", True, "启用混合精度训练" if LANG=="zh" else "Use AMP"),
+    ("use_muon", False, "使用 Muon 优化器" if LANG=="zh" else "Use Muon optimizer"),
     ("embedding_model", "BAAI/bge-small-zh-v1.5", "嵌入模型" if LANG=="zh" else "Embedding model"),
     ("vector_db_path", "./vector_db", "向量数据库路径" if LANG=="zh" else "Vector DB path"),
     ("chunk_size", 500, "文本块大小" if LANG=="zh" else "Chunk size"),
@@ -209,12 +219,11 @@ ALL_CONFIG_PARAMS = [
     ("temperature", 0.8, "生成温度" if LANG=="zh" else "Generation temperature"),
     ("top_k", 50, "Top-K 采样" if LANG=="zh" else "Top-K sampling"),
     ("device", "cuda" if __import__("torch").cuda.is_available() else "cpu", "计算设备" if LANG=="zh" else "Device"),
+    # 蒸馏工具配置
     ("distill_output_file", "distillation.txt", "蒸馏输出文件" if LANG=="zh" else "Distillation output file"),
     ("distill_deepseek_api_key", "your-deepseek-api-key", "DeepSeek API 密钥" if LANG=="zh" else "DeepSeek API key"),
     ("distill_qwen_api_key", "your-qwen-api-key", "Qwen API 密钥" if LANG=="zh" else "Qwen API key"),
     ("distill_default_topic", "共产主义", "默认蒸馏主题" if LANG=="zh" else "Default distillation topic"),
-    ("use_muon", False, "使用 Muon 优化器" if LANG=="zh" else "Use Muon optimizer"),
-    ("use_mtp_speculative_decode", True, "推理时使用 MTP 自投机解码" if LANG=="zh" else "Use MTP speculative decoding in generation"),
 ]
 
 def read_config_lines():

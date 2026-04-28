@@ -3,9 +3,10 @@ import torch
 class Config:
     # ========== 数据 ==========
     text_datasets = [
-        "enhanced_data.txt",
+        "Open-Orca/OpenOrca",        # 分词器训练需要的第一数据集（在线）
         "my_local_data.txt",
-        "distillation.txt"
+        "distillation.txt",
+        "enhanced_data.txt"          # 你的扩充数据，等生成后自动可用
     ]
     max_samples_per_dataset = 50000
     max_seq_len = 512
@@ -91,7 +92,7 @@ class Config:
     use_amp = True
 
     # ========== 优化器 ==========
-    use_muon = False          # 是否使用 Muon 优化器
+    use_muon = False
 
     # ========== RAG ==========
     embedding_model = "BAAI/bge-small-zh-v1.5"
