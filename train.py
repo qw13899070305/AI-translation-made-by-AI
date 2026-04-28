@@ -5,7 +5,7 @@ from dataset import get_dataloader
 from model import MiniChat
 from lora import apply_lora_to_model, mark_only_lora_as_trainable
 from utils import ensure_dir
-from muon import Muon
+from muon import Muon, MuonClip
 import sentencepiece as spm
 from tqdm import tqdm
 
@@ -21,17 +21,23 @@ if cfg.use_lora:
     apply_lora_to_model(model)
     mark_only_lora_as_trainable(model)
 
-# 优化器
+# 优化器选择
 if cfg.use_muon:
     muon_params, adam_params = [], []
     for n, p in model.named_parameters():
         if not p.requires_grad: continue
         if p.ndim >= 2: muon_params.append(p)
         else: adam_params.append(p)
-    optimizer = Muon([
-        {'params': muon_params, 'muon_wd': 0.0, 'adam_wd': 0.01},
-        {'params': adam_params, 'muon_wd': 0.0, 'adam_wd': 0.01}
-    ], lr=cfg.learning_rate)
+    if cfg.use_muon_clip:
+        optimizer = MuonClip([
+            {'params': muon_params, 'muon_wd': 0.0, 'adam_wd': 0.01},
+            {'params': adam_params, 'muon_wd': 0.0, 'adam_wd': 0.01}
+        ], lr=cfg.learning_rate, clip_grad=cfg.muon_clip_grad, clip_update=cfg.muon_clip_update)
+    else:
+        optimizer = Muon([
+            {'params': muon_params, 'muon_wd': 0.0, 'adam_wd': 0.01},
+            {'params': adam_params, 'muon_wd': 0.0, 'adam_wd': 0.01}
+        ], lr=cfg.learning_rate)
 else:
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()), lr=cfg.learning_rate)

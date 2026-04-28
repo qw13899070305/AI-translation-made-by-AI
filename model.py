@@ -44,9 +44,7 @@ def apply_rotary_emb(xq, xk, freqs_cis):
 
 
 # =========================== 注意力模块 ===========================
-
 class GroupedQueryAttention(nn.Module):
-    """GQA（分组查询注意力）"""
     def __init__(self, dim, n_heads, n_kv_heads, max_seq_len):
         super().__init__()
         assert n_heads % n_kv_heads == 0
@@ -92,7 +90,6 @@ class GroupedQueryAttention(nn.Module):
 
 
 class SlidingWindowAttention(nn.Module):
-    """滑动窗口注意力 - 参考 MiMo-V2-Flash"""
     def __init__(self, dim, n_heads, n_kv_heads, max_seq_len, window_size=None):
         super().__init__()
         assert n_heads % n_kv_heads == 0
@@ -136,7 +133,6 @@ class SlidingWindowAttention(nn.Module):
         v = v.repeat_interleave(self.n_rep, dim=1)
 
         att = (q @ k.transpose(-2,-1)) * (self.head_dim ** -0.5) + self.attn_sink_bias
-
         arange = torch.arange(T_kv, device=x.device)
         q_pos = arange[-T:] if T <= T_kv else arange[:T]
         dist = (q_pos.unsqueeze(1) - arange.unsqueeze(0)).abs()
@@ -153,7 +149,6 @@ class SlidingWindowAttention(nn.Module):
 
 
 class MultiHeadLatentAttention(nn.Module):
-    """MLA - 参考 DeepSeek-V3"""
     def __init__(self, dim, n_heads, max_seq_len):
         super().__init__()
         self.n_heads = n_heads
@@ -205,7 +200,6 @@ class MultiHeadLatentAttention(nn.Module):
 
 
 class GatedDeltaNet(nn.Module):
-    """Gated DeltaNet 线性注意力 (参考 Qwen3-Next)"""
     def __init__(self, dim, n_heads, max_seq_len):
         super().__init__()
         self.n_heads = n_heads
@@ -253,7 +247,6 @@ class GatedDeltaNet(nn.Module):
 
 
 class CompressedSparseAttention(nn.Module):
-    """CSA 压缩稀疏注意力 (参考 DeepSeek V4)"""
     def __init__(self, dim, n_heads, n_kv_heads, max_seq_len):
         super().__init__()
         self.n_heads = n_heads
@@ -365,7 +358,6 @@ def create_attention_layer(dim, n_heads, n_kv_heads, max_seq_len, layer_idx):
 
 # =========================== 增强 MoE ===========================
 class QwenStyleMoE(nn.Module):
-    """高稀疏度 MoE，带共享专家和动态偏置"""
     def __init__(self, dim, hidden_dim, num_experts=32, top_k=2):
         super().__init__()
         self.num_experts = num_experts
@@ -389,7 +381,6 @@ class QwenStyleMoE(nn.Module):
     def forward(self, x):
         B, T, D = x.shape
         x_flat = x.view(-1, D)
-
         shared_out = self.shared_expert(x_flat)
 
         scores = self.gate(x_flat).sigmoid() + self.e_score_correction_bias
@@ -399,17 +390,15 @@ class QwenStyleMoE(nn.Module):
         sparse_out = torch.zeros_like(x_flat)
         for i, expert in enumerate(self.experts):
             mask_i = (topk_indices == i).any(dim=-1)
-            if not mask_i.any():
-                continue
+            if not mask_i.any(): continue
             x_i = x_flat[mask_i]
             idx_in_topk = (topk_indices[mask_i] == i).nonzero(as_tuple=True)[1]
             weight_i = topk_weights[mask_i][torch.arange(x_i.shape[0], device=x.device), idx_in_topk]
             sparse_out[mask_i] += weight_i.unsqueeze(-1) * expert(x_i)
-
         return (shared_out + sparse_out).view(B, T, D)
 
 
-# =========================== MTP 模块 ===========================
+# =========================== MTP 模块（修复） ===========================
 class MultiTokenPredictor(nn.Module):
     def __init__(self, dim, vocab_size, num_layers=None, hidden_dim=None):
         super().__init__()
@@ -423,6 +412,9 @@ class MultiTokenPredictor(nn.Module):
             ) for _ in range(n_layers)
         ])
         self.embed_norm = nn.LayerNorm(dim)
+        # 投影层：将词汇表维度映射回隐藏维度
+        self.proj = nn.Linear(vocab_size, dim, bias=False)
+        self.residual_weight = nn.Parameter(torch.zeros(1))
 
     def forward(self, hidden_states):
         h = self.embed_norm(hidden_states)
@@ -430,7 +422,9 @@ class MultiTokenPredictor(nn.Module):
         for head in self.mtp_heads:
             pred = head(h)
             predictions.append(pred)
-            h = F.linear(F.softmax(pred, dim=-1), self.mtp_heads[0][0].weight[:h.shape[-1]].t())
+            # 将 softmax 后的概率投影回隐藏空间，并融入残差
+            h = self.proj(F.softmax(pred, dim=-1))
+            h = h * self.residual_weight + hidden_states * (1 - self.residual_weight)
         return predictions
 
 
@@ -538,7 +532,6 @@ class MiniChat(nn.Module):
                 idx_cond, use_cache=True, past_kvs=past_kvs,
                 vision_embeds=vision_embeds if past_kvs is None else None)
 
-            # 基准 token
             logits_base = logits[:, -1, :] / temperature
             if top_k:
                 v, _ = torch.topk(logits_base, min(top_k, logits_base.size(-1)))
@@ -547,7 +540,6 @@ class MiniChat(nn.Module):
             base_token = torch.multinomial(probs, num_samples=1)
             draft_tokens = [base_token]
 
-            # MTP 预测
             for i in range(mtp_depth):
                 mtp_logits = mtp_preds[i][:, -1, :] / temperature
                 if top_k:
@@ -555,7 +547,6 @@ class MiniChat(nn.Module):
                     mtp_logits[mtp_logits < v[:, [-1]]] = -float('Inf')
                 draft_tokens.append(torch.multinomial(F.softmax(mtp_logits, dim=-1), 1))
 
-            # 并行验证
             draft_ids = torch.cat(draft_tokens, dim=1)
             verify_in = torch.cat([idx_cond, draft_ids], dim=1)
             with torch.no_grad():

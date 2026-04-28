@@ -24,7 +24,7 @@ class Config:
     n_heads = 8
     n_kv_heads = 4
     use_moe = True
-    num_experts = 32
+    num_experts = 64                # 提高至 64，模仿 Kimi K2 的极高稀疏度
     top_k_experts = 2
 
     moe_use_sigmoid_gate = True
@@ -92,7 +92,10 @@ class Config:
     use_amp = True
 
     # ========== 优化器 ==========
-    use_muon = False
+    use_muon = False                   # 使用 Muon 优化器
+    use_muon_clip = False              # 使用 MuonClip (Kimi K2 风格)
+    muon_clip_grad = 1.0               # MuonClip 梯度裁剪阈值
+    muon_clip_update = 1.0             # MuonClip 更新量裁剪阈值
 
     # ========== RAG ==========
     embedding_model = "BAAI/bge-small-zh-v1.5"
