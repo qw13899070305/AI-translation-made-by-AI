@@ -13,41 +13,38 @@ class TextChatDataset(Dataset):
         self.sp = spm.SentencePieceProcessor()
         tokenizer_path = f"tokenizer/{cfg.tokenizer_prefix}.model"
         if not os.path.exists(tokenizer_path):
-            raise FileNotFoundError(f"分词器不存在: {tokenizer_path}\n请先运行: python tokenizer_train.py")
+            raise FileNotFoundError(f"Tokenizer not found: {tokenizer_path}. Please run tokenizer_train.py first.")
         self.sp.load(tokenizer_path)
         self.data = []
-        print("📚 加载文本数据集...")
+        print("Loading text datasets...")
         all_splits = []
 
         for ds_name in cfg.text_datasets:
             try:
                 if ds_name.endswith('.txt'):
-                    # 本地文本文件
                     if not os.path.exists(ds_name):
-                        print(f"   ⚠️ 文件不存在，跳过: {ds_name}")
+                        print(f"   File not found, skipping: {ds_name}")
                         continue
-                    print(f"   📄 加载本地文件: {ds_name}")
+                    print(f"   Loading local file: {ds_name}")
                     with open(ds_name, 'r', encoding='utf-8') as f:
                         lines = [line.strip() for line in f if line.strip()]
                     ds = HFDataset.from_dict({'text': lines})
                 else:
-                    # HuggingFace 远程数据集
-                    print(f"   📡 加载远程数据集: {ds_name}")
+                    print(f"   Loading remote dataset: {ds_name}")
                     ds = load_dataset(ds_name, split="train", streaming=False)
                     ds = ds.select(range(min(cfg.max_samples_per_dataset, len(ds))))
                 all_splits.append(ds)
-                print(f"   ✅ 加载 {len(ds)} 条")
+                print(f"   Loaded {len(ds)} entries")
             except Exception as e:
-                print(f"   ❌ 加载失败 {ds_name}: {e}")
+                print(f"   Failed to load {ds_name}: {e}")
 
         if not all_splits:
-            raise RuntimeError("没有成功加载任何数据集")
+            raise RuntimeError("No datasets loaded successfully")
 
         combined = concatenate_datasets(all_splits) if len(all_splits) > 1 else all_splits[0]
 
         processed = 0
         for sample in combined:
-            # 灵活的字段提取
             q = a = None
             if 'question' in sample and 'response' in sample:
                 q, a = sample['question'], sample['response']
@@ -67,7 +64,7 @@ class TextChatDataset(Dataset):
             self.data.append(torch.tensor(ids, dtype=torch.long))
             processed += 1
 
-        print(f"✅ 有效数据共 {processed} 条")
+        print(f"Valid entries: {processed}")
 
     def __len__(self):
         return len(self.data)
@@ -88,12 +85,4 @@ def collate_fn(batch):
 
 def get_dataloader(batch_size=cfg.batch_size):
     dataset = TextChatDataset()
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        collate_fn=collate_fn,
-        num_workers=cfg.num_workers,
-        pin_memory=True if cfg.device == "cuda" else False,
-        persistent_workers=True if cfg.num_workers > 0 else False
-    )
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=cfg.num_workers, pin_memory=True if cfg.device == "cuda" else False, persistent_workers=True if cfg.num_workers > 0 else False)

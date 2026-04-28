@@ -1,100 +1,145 @@
 #!/bin/bash
 # ============================================
-# 我的专属 AI 助手 - 一键安装 (macOS)
-# 只安装缺失依赖，完成后调用 start.command
+# 我的专属 AI 助手 - 一键安装 (Linux 全发行版·中英双语)
 # ============================================
 
 set -e
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# ---------- 语言选择 ----------
+echo "========================================"
+echo "   🤖 My Own AI Assistant Installer"
+echo "========================================"
+echo "  Please select language / 请选择语言:"
+echo "  1) English"
+echo "  2) 中文"
+echo ""
+read -p "Enter choice (1 or 2): " lang_choice
 
-echo -e "${BLUE}========================================${NC}"
-echo -e "${GREEN}   🤖 我的专属 AI 助手 环境安装 (macOS)${NC}"
-echo -e "${BLUE}========================================${NC}"
-
-# 1. 检查 Homebrew（macOS 包管理器）
-if ! command -v brew &> /dev/null; then
-    echo -e "${YELLOW}⚠️  未检测到 Homebrew${NC}"
-    echo -e "${YELLOW}   Homebrew 是 macOS 上最常用的包管理器，用于安装 Python 等工具。${NC}"
-    echo -e "${YELLOW}   是否立即安装 Homebrew？(y/n)${NC}"
-    read -r install_brew
-    if [[ "$install_brew" =~ ^[Yy]$ ]]; then
-        echo -e "${BLUE}📥 正在安装 Homebrew...${NC}"
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-        # 将 Homebrew 添加到 PATH（Apple Silicon 和 Intel 路径不同）
-        if [ -f /opt/homebrew/bin/brew ]; then
-            eval "$(/opt/homebrew/bin/brew shellenv)"
-        elif [ -f /usr/local/bin/brew ]; then
-            eval "$(/usr/local/bin/brew shellenv)"
-        fi
-        echo -e "${GREEN}✅ Homebrew 安装完成${NC}"
-    else
-        echo -e "${RED}❌ Homebrew 是必需的工具，安装中止。${NC}"
-        exit 1
-    fi
+if [ "$lang_choice" == "1" ]; then
+    MSG_WELCOME="Starting installation..."
+    MSG_DETECT="🔍 Detecting system environment..."
+    MSG_FOUND="✅ Detected system:"
+    MSG_NOT_FOUND="❌ Unable to identify your Linux distribution."
+    MSG_INSTALL_DEPS="📦 Installing system dependencies (sudo may be required)..."
+    MSG_PYTHON_OK="✅ Python3 is already installed."
+    MSG_PYTHON_INSTALL="⚠️  Python3 not found, installing via package manager..."
+    MSG_VENV="📦 Creating Python virtual environment..."
+    MSG_VENV_OK="✅ Virtual environment is ready."
+    MSG_PIP_INSTALL="📥 Installing Python dependencies..."
+    MSG_PIP_OK="✅ Python dependencies installed."
+    MSG_TOKENIZER="🔧 Tokenizer not found, training..."
+    MSG_TOKENIZER_OK="✅ Tokenizer training completed."
+    MSG_DONE="✨ Environment setup complete! Launching AI..."
+    MSG_START_NOT_FOUND="⚠️  start.sh not found, launching Web UI directly..."
+    MSG_UNSUPPORTED_PM="❌ Unsupported package manager. Please install Python manually."
 else
-    echo -e "${GREEN}✅ Homebrew 已安装${NC}"
+    MSG_WELCOME="开始安装..."
+    MSG_DETECT="🔍 正在检测系统环境..."
+    MSG_FOUND="✅ 检测到系统:"
+    MSG_NOT_FOUND="❌ 无法识别你的 Linux 发行版。"
+    MSG_INSTALL_DEPS="📦 正在安装系统依赖 (可能需要sudo权限)..."
+    MSG_PYTHON_OK="✅ Python3 已安装。"
+    MSG_PYTHON_INSTALL="⚠️  未找到 Python3，正在通过包管理器安装..."
+    MSG_VENV="📦 正在创建 Python 虚拟环境..."
+    MSG_VENV_OK="✅ 虚拟环境已就绪。"
+    MSG_PIP_INSTALL="📥 正在安装 Python 依赖..."
+    MSG_PIP_OK="✅ Python 依赖安装完成。"
+    MSG_TOKENIZER="🔧 分词器未找到，正在训练..."
+    MSG_TOKENIZER_OK="✅ 分词器训练完成。"
+    MSG_DONE="✨ 环境安装完成！正在启动 AI..."
+    MSG_START_NOT_FOUND="⚠️  未找到 start.sh，将直接启动 Web 界面..."
+    MSG_UNSUPPORTED_PM="❌ 不支持的包管理器，请手动安装 Python。"
 fi
 
-# 2. 检查 Python 版本（macOS 预装的可能较旧）
-PYTHON_OK=false
-if command -v python3 &> /dev/null; then
-    PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-    PY_MAJOR=$(echo "$PY_VER" | cut -d. -f1)
-    PY_MINOR=$(echo "$PY_VER" | cut -d. -f2)
-    if [ "$PY_MAJOR" -ge 3 ] && [ "$PY_MINOR" -ge 8 ]; then
-        PYTHON_OK=true
-        echo -e "${GREEN}✅ Python $PY_VER 已安装（版本符合要求）${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Python 版本 $PY_VER 过低（需要 3.8+）${NC}"
-    fi
+echo -e "\n$MSG_WELCOME\n"
+
+# ---------- 智能探测 Linux 发行版 ----------
+echo -e "$MSG_DETECT"
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS=$ID
+    OS_VERSION=$VERSION_ID
+else
+    echo -e "$MSG_NOT_FOUND"
+    exit 1
 fi
 
-if [ "$PYTHON_OK" = false ]; then
-    echo -e "${BLUE}📥 通过 Homebrew 安装 Python 3.12...${NC}"
-    brew install python@3.12
-    # 链接到 python3 命令
-    brew link --overwrite python@3.12
-    echo -e "${GREEN}✅ Python 安装完成${NC}"
+PYTHON_DEV_PKG=""
+case $OS in
+    ubuntu|debian)
+        PKG_MANAGER="apt-get"
+        PYTHON_DEV_PKG="python3-venv python3-dev"
+        ;;
+    centos|rhel|fedora|rocky|almalinux)
+        PKG_MANAGER="dnf"
+        PYTHON_DEV_PKG="python3-devel"
+        if [ "$OS" = "centos" ] && [ "${OS_VERSION%%.*}" -le 7 ]; then
+            PKG_MANAGER="yum"
+        fi
+        ;;
+    arch|manjaro)
+        PKG_MANAGER="pacman"
+        PYTHON_DEV_PKG="base-devel"
+        ;;
+    alpine)
+        PKG_MANAGER="apk"
+        PYTHON_DEV_PKG="python3-dev"
+        ;;
+    opensuse*|sles)
+        PKG_MANAGER="zypper"
+        PYTHON_DEV_PKG="python3-devel"
+        ;;
+    *)
+        PKG_MANAGER="apt-get"
+        PYTHON_DEV_PKG="python3-venv python3-dev"
+        ;;
+esac
+
+echo -e "$MSG_FOUND $OS, using $PKG_MANAGER"
+
+# ---------- 安装系统依赖 ----------
+echo -e "$MSG_INSTALL_DEPS"
+if ! command -v python3 &> /dev/null; then
+    echo -e "$MSG_PYTHON_INSTALL"
+    case $PKG_MANAGER in
+        apt-get) sudo apt-get update && sudo apt-get install -y python3 python3-pip $PYTHON_DEV_PKG ;;
+        dnf) sudo dnf install -y python3 python3-pip $PYTHON_DEV_PKG ;;
+        yum) sudo yum install -y python3 python3-pip $PYTHON_DEV_PKG ;;
+        pacman) sudo pacman -Sy --noconfirm python python-pip $PYTHON_DEV_PKG ;;
+        apk) sudo apk add --no-cache python3 py3-pip $PYTHON_DEV_PKG ;;
+        zypper) sudo zypper --non-interactive install python3 python3-pip $PYTHON_DEV_PKG ;;
+        *) echo -e "$MSG_UNSUPPORTED_PM" && exit 1 ;;
+    esac
+else
+    echo -e "$MSG_PYTHON_OK"
 fi
 
-# 3. 创建虚拟环境（如果不存在）
+# ---------- 创建虚拟环境 ----------
+echo -e "$MSG_VENV"
 if [ ! -d "venv" ]; then
-    echo -e "${BLUE}📦 创建虚拟环境...${NC}"
     python3 -m venv venv
 fi
-echo -e "${GREEN}✅ 虚拟环境已就绪${NC}"
+echo -e "$MSG_VENV_OK"
 
-# 4. 激活虚拟环境并升级 pip
+# ---------- 安装 Python 依赖 ----------
 source venv/bin/activate
 pip install --upgrade pip -q
-
-# 5. 安装 Python 依赖
-echo -e "${BLUE}📥 安装 Python 依赖...${NC}"
+echo -e "$MSG_PIP_INSTALL"
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-echo -e "${GREEN}✅ 依赖安装完成${NC}"
+echo -e "$MSG_PIP_OK"
 
-# 6. 检查分词器，若无则训练
+# ---------- 训练分词器 ----------
 if [ ! -f "tokenizer/our_bpe.model" ]; then
-    echo -e "${YELLOW}🔧 分词器未找到，正在训练...${NC}"
+    echo -e "$MSG_TOKENIZER"
     python tokenizer_train.py
-    echo -e "${GREEN}✅ 分词器训练完成${NC}"
+    echo -e "$MSG_TOKENIZER_OK"
 fi
 
-echo ""
-echo -e "${GREEN}✨ 环境安装完成！正在启动...${NC}"
-echo ""
-
-# 7. 调用启动脚本（优先 start.command，其次 start.sh）
-if [ -f "start.command" ]; then
-    bash start.command
-elif [ -f "start.sh" ]; then
+# ---------- 启动 ----------
+echo -e "$MSG_DONE"
+if [ -f "start.sh" ]; then
     bash start.sh
 else
-    echo -e "${YELLOW}⚠️ 未找到启动脚本，直接启动 Web 界面...${NC}"
+    echo -e "$MSG_START_NOT_FOUND"
     python chat_web.py
 fi

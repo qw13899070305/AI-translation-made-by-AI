@@ -16,12 +16,23 @@ class RMSNorm(nn.Module):
     def forward(self, x):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
 
+
 def precompute_freqs_cis(dim, end, theta=10000.0, scaling_factor=1.0):
     half_dim = dim // 2
     freqs = 1.0 / (theta ** (torch.arange(0, half_dim, dtype=torch.float32) / half_dim))
     t = torch.arange(end, dtype=torch.float32) / scaling_factor
     freqs = torch.outer(t, freqs)
     return torch.polar(torch.ones_like(freqs), freqs)
+
+
+def precompute_freqs_cis_ntk(dim, end, theta=10000.0, scaling_factor=1.0,
+                              original_max_len=512, target_max_len=None):
+    if target_max_len is None:
+        target_max_len = end
+    scale = target_max_len / max(original_max_len, 1)
+    ntk_theta = theta * (scale ** (dim / (dim - 2)))
+    return precompute_freqs_cis(dim, end, theta=ntk_theta, scaling_factor=scaling_factor)
+
 
 def apply_rotary_emb(xq, xk, freqs_cis):
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
@@ -30,6 +41,7 @@ def apply_rotary_emb(xq, xk, freqs_cis):
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
+
 
 # =========================== 注意力模块 ===========================
 
@@ -45,8 +57,14 @@ class GroupedQueryAttention(nn.Module):
         self.wk = nn.Linear(dim, n_kv_heads * self.head_dim, bias=False)
         self.wv = nn.Linear(dim, n_kv_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(dim, dim, bias=False)
-        self.register_buffer("freqs_cis", precompute_freqs_cis(
-            self.head_dim, max_seq_len * 2, theta=cfg.rope_theta, scaling_factor=cfg.rope_scaling_factor))
+
+        if cfg.use_ntk_rope:
+            self.register_buffer("freqs_cis", precompute_freqs_cis_ntk(
+                self.head_dim, max_seq_len * 2, cfg.rope_theta, cfg.rope_scaling_factor,
+                cfg.original_max_seq_len, cfg.target_context_len))
+        else:
+            self.register_buffer("freqs_cis", precompute_freqs_cis(
+                self.head_dim, max_seq_len * 2, cfg.rope_theta, cfg.rope_scaling_factor))
 
     def forward(self, x, mask=None, use_cache=False, past_kv=None):
         B, T, C = x.shape
@@ -67,18 +85,14 @@ class GroupedQueryAttention(nn.Module):
         k = k.repeat_interleave(self.n_rep, dim=1)
         v = v.repeat_interleave(self.n_rep, dim=1)
 
-        att = (q @ k.transpose(-2,-1)) * (self.head_dim ** -0.5)
-        if mask is not None:
-            att = att.masked_fill(mask[...,:T,:k.shape[2]] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        if torch.isnan(att).any():
-            att = torch.ones_like(att) / att.shape[-1]
-        out = (att @ v).transpose(1,2).contiguous().view(B, T, C)
+        att_mask = mask[:, :, :T, :k.shape[2]] if mask is not None else None
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=att_mask)
+        out = out.transpose(1,2).contiguous().view(B, T, C)
         return self.wo(out), present_kv
 
 
 class SlidingWindowAttention(nn.Module):
-    """滑动窗口注意力 - 参考 MiMo-V2-Flash: 128-token window, 5:1 hybrid ratio"""
+    """滑动窗口注意力 - 参考 MiMo-V2-Flash"""
     def __init__(self, dim, n_heads, n_kv_heads, max_seq_len, window_size=None):
         super().__init__()
         assert n_heads % n_kv_heads == 0
@@ -90,9 +104,14 @@ class SlidingWindowAttention(nn.Module):
         self.wk = nn.Linear(dim, n_kv_heads * self.head_dim, bias=False)
         self.wv = nn.Linear(dim, n_kv_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(dim, dim, bias=False)
-        self.register_buffer("freqs_cis", precompute_freqs_cis(
-            self.head_dim, max_seq_len * 2, theta=cfg.rope_theta, scaling_factor=cfg.rope_scaling_factor))
-        # Attention sink bias: 可学习偏置缓解 SWA 长距离衰减
+
+        if cfg.use_ntk_rope:
+            self.register_buffer("freqs_cis", precompute_freqs_cis_ntk(
+                self.head_dim, max_seq_len * 2, cfg.rope_theta, cfg.rope_scaling_factor,
+                cfg.original_max_seq_len, cfg.target_context_len))
+        else:
+            self.register_buffer("freqs_cis", precompute_freqs_cis(
+                self.head_dim, max_seq_len * 2, cfg.rope_theta, cfg.rope_scaling_factor))
         self.register_buffer("attn_sink_bias", torch.zeros(1, n_heads, 1, 1))
 
     def forward(self, x, mask=None, use_cache=False, past_kv=None):
@@ -118,26 +137,23 @@ class SlidingWindowAttention(nn.Module):
 
         att = (q @ k.transpose(-2,-1)) * (self.head_dim ** -0.5) + self.attn_sink_bias
 
-        # 构造 SWA 掩码: 每个 token 只能看到前后 window_size/2 范围内的 token
         arange = torch.arange(T_kv, device=x.device)
         q_pos = arange[-T:] if T <= T_kv else arange[:T]
         dist = (q_pos.unsqueeze(1) - arange.unsqueeze(0)).abs()
         swa_mask = dist <= (self.window_size // 2)
         att = att.masked_fill(~swa_mask.unsqueeze(0).unsqueeze(0), float('-inf'))
 
-        # 叠加因果掩码
         if mask is not None:
-            att = att.masked_fill(mask[...,:T,:k.shape[2]] == 0, float('-inf'))
+            att = att.masked_fill(mask[:,:,:T,:k.shape[2]] == 0, float('-inf'))
 
         att = F.softmax(att, dim=-1)
-        if torch.isnan(att).any():
-            att = torch.ones_like(att) / att.shape[-1]
+        att = torch.where(torch.isnan(att), torch.ones_like(att)/att.shape[-1], att)
         out = (att @ v).transpose(1,2).contiguous().view(B, T, C)
         return self.wo(out), present_kv
 
 
 class MultiHeadLatentAttention(nn.Module):
-    """MLA - 参考 DeepSeek-V3: KV低维压缩, Q压缩解压, 解耦RoPE"""
+    """MLA - 参考 DeepSeek-V3"""
     def __init__(self, dim, n_heads, max_seq_len):
         super().__init__()
         self.n_heads = n_heads
@@ -155,7 +171,7 @@ class MultiHeadLatentAttention(nn.Module):
         self.kv_b_proj = nn.Linear(self.kv_lora_rank, n_heads * (self.qk_rope_head_dim + self.v_head_dim), bias=False)
         self.o_proj = nn.Linear(n_heads * self.v_head_dim, dim, bias=False)
         self.register_buffer("freqs_cis", precompute_freqs_cis(
-            self.qk_rope_head_dim, max_seq_len * 2, theta=cfg.rope_theta, scaling_factor=cfg.rope_scaling_factor))
+            self.qk_rope_head_dim, max_seq_len * 2, cfg.rope_theta, cfg.rope_scaling_factor))
 
     def forward(self, x, mask=None, use_cache=False, past_kv=None):
         B, T, C = x.shape
@@ -181,20 +197,146 @@ class MultiHeadLatentAttention(nn.Module):
         q, k, v = q.transpose(1,2), k.transpose(1,2), v.transpose(1,2)
         att = (q @ k.transpose(-2,-1)) * (self.qk_rope_head_dim ** -0.5)
         if mask is not None:
-            att = att.masked_fill(mask[...,:T,:k.shape[2]] == 0, float('-inf'))
+            att = att.masked_fill(mask[:,:,:T,:k.shape[2]] == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
-        if torch.isnan(att).any():
-            att = torch.ones_like(att) / att.shape[-1]
+        att = torch.where(torch.isnan(att), torch.ones_like(att)/att.shape[-1], att)
         out = (att @ v).transpose(1,2).contiguous().view(B, T_total, self.n_heads * self.v_head_dim)
         return self.o_proj(out[:, -T:]), present_kv
 
-# =========================== 混合注意力层 ===========================
 
+class GatedDeltaNet(nn.Module):
+    """Gated DeltaNet 线性注意力 (参考 Qwen3-Next)"""
+    def __init__(self, dim, n_heads, max_seq_len):
+        super().__init__()
+        self.n_heads = n_heads
+        self.head_dim = dim // n_heads
+        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
+        self.gate_alpha = nn.Sequential(nn.Linear(dim, n_heads * self.head_dim), nn.Sigmoid())
+        self.gate_beta  = nn.Sequential(nn.Linear(dim, n_heads * self.head_dim), nn.Sigmoid())
+        self.norm_q = RMSNorm(self.head_dim)
+        self.norm_k = RMSNorm(self.head_dim)
+
+    def forward(self, x, mask=None, use_cache=False, past_kv=None):
+        B, T, C = x.shape
+        q = self.norm_q(self.wq(x).view(B, T, self.n_heads, self.head_dim))
+        k = self.norm_k(self.wk(x).view(B, T, self.n_heads, self.head_dim))
+        v = self.wv(x).view(B, T, self.n_heads, self.head_dim)
+        alpha = self.gate_alpha(x).view(B, T, self.n_heads, self.head_dim)
+        beta  = self.gate_beta(x).view(B, T, self.n_heads, self.head_dim)
+
+        if use_cache and past_kv is not None:
+            state = past_kv[0]
+        else:
+            state = torch.zeros(B, self.n_heads, self.head_dim, self.head_dim,
+                                device=x.device, dtype=x.dtype)
+
+        outputs = []
+        for t in range(T):
+            qt = q[:, t, :, :]
+            kt = k[:, t, :, :]
+            vt = v[:, t, :, :]
+            at = alpha[:, t, :, :]
+            bt = beta[:, t, :, :]
+
+            out_t = torch.einsum('bhd,bhde->bhe', qt * bt, state)
+            value_pred = torch.einsum('bhd,bhde->bhe', qt, state)
+            error = vt - value_pred * at
+            state = state * at.unsqueeze(-1) + torch.einsum('bhd,bhe->bhde', kt, error)
+            outputs.append(out_t)
+
+        out = torch.stack(outputs, dim=1).contiguous().view(B, T, self.n_heads * self.head_dim)
+        present_kv = (state,) if use_cache else None
+        return self.wo(out), present_kv
+
+
+class CompressedSparseAttention(nn.Module):
+    """CSA 压缩稀疏注意力 (参考 DeepSeek V4)"""
+    def __init__(self, dim, n_heads, n_kv_heads, max_seq_len):
+        super().__init__()
+        self.n_heads = n_heads
+        self.n_kv_heads = n_kv_heads
+        self.head_dim = dim // n_heads
+        self.n_rep = n_heads // n_kv_heads
+        self.compress_ratio = cfg.csa_compress_ratio
+        self.top_k = min(cfg.csa_top_k, max_seq_len // cfg.csa_compress_ratio)
+        self.max_seq_len = max_seq_len
+
+        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(dim, n_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(dim, n_kv_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(dim, dim, bias=False)
+
+        self.indexer_q = nn.Linear(dim, self.head_dim, bias=False)
+        self.indexer_k = nn.Linear(dim, self.head_dim, bias=False)
+        self.compress_weight_a = nn.Linear(self.head_dim, 1, bias=False)
+        self.compress_weight_b = nn.Linear(self.head_dim, 1, bias=False)
+
+        if cfg.use_ntk_rope:
+            self.register_buffer("freqs_cis", precompute_freqs_cis_ntk(
+                self.head_dim, max_seq_len * 2, cfg.rope_theta, cfg.rope_scaling_factor,
+                cfg.original_max_seq_len, cfg.target_context_len))
+        else:
+            self.register_buffer("freqs_cis", precompute_freqs_cis(
+                self.head_dim, max_seq_len * 2, cfg.rope_theta, cfg.rope_scaling_factor))
+
+    def forward(self, x, mask=None, use_cache=False, past_kv=None):
+        B, T, C = x.shape
+        q = self.wq(x).view(B, T, self.n_heads, self.head_dim).transpose(1,2)
+        k = self.wk(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1,2)
+        v = self.wv(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1,2)
+        q, k = apply_rotary_emb(q, k, self.freqs_cis)
+
+        if past_kv is not None:
+            k = torch.cat([past_kv[0], k], dim=2)
+            v = torch.cat([past_kv[1], v], dim=2)
+        T_kv = k.shape[2]
+
+        compressed_k, compressed_v = [], []
+        for i in range(0, T_kv, self.compress_ratio):
+            chunk_k = k[:, :, i:i+self.compress_ratio, :]
+            chunk_v = v[:, :, i:i+self.compress_ratio, :]
+            if chunk_k.shape[2] == 0: continue
+            w_a = F.softmax(self.compress_weight_a(chunk_k), dim=2)
+            w_b = F.softmax(self.compress_weight_b(chunk_k), dim=2)
+            w = (w_a + w_b) / 2.0
+            comp_k = (chunk_k * w).sum(dim=2)
+            comp_v = (chunk_v * w).sum(dim=2)
+            compressed_k.append(comp_k)
+            compressed_v.append(comp_v)
+
+        compressed_k = torch.stack(compressed_k, dim=2)
+        compressed_v = torch.stack(compressed_v, dim=2)
+
+        idxer_q = self.indexer_q(x).view(B, T, 1, self.head_dim).transpose(1,2)
+        idxer_k = self.indexer_k(x).view(B, 1, T, self.head_dim)
+        scores = (idxer_q @ idxer_k.transpose(-2,-1)).mean(dim=3)
+        block_scores = scores[:, :, :, :compressed_k.shape[2]].squeeze(1)
+
+        if compressed_k.shape[2] > self.top_k:
+            ret = torch.topk(block_scores, self.top_k, dim=-1)
+            topk_idx = ret.indices
+            B_idx = torch.arange(B, device=x.device).view(B,1,1)
+            H_idx = torch.arange(self.n_kv_heads, device=x.device).view(1,self.n_kv_heads,1)
+            compressed_k = compressed_k[B_idx, H_idx, topk_idx.unsqueeze(1), :].permute(0,2,1,3).contiguous()
+            compressed_v = compressed_v[B_idx, H_idx, topk_idx.unsqueeze(1), :].permute(0,2,1,3).contiguous()
+            compressed_k = compressed_k.permute(0,2,1,3)
+            compressed_v = compressed_v.permute(0,2,1,3)
+
+        k_rep = compressed_k.repeat_interleave(self.n_rep, dim=1)
+        v_rep = compressed_v.repeat_interleave(self.n_rep, dim=1)
+
+        att = (q @ k_rep.transpose(-2,-1)) * (self.head_dim ** -0.5)
+        att = F.softmax(att, dim=-1)
+        out = (att @ v_rep).transpose(1,2).contiguous().view(B, T, C)
+        present_kv = (compressed_k, compressed_v) if use_cache else None
+        return self.wo(out), present_kv
+
+
+# =========================== 创建注意力层 ===========================
 def create_attention_layer(dim, n_heads, n_kv_heads, max_seq_len, layer_idx):
-    """
-    根据 attn_type 和 layer_idx 创建对应的注意力层。
-    hybrid 模式: 每 (swa_hybrid_ratio) 层中，前 (swa_hybrid_ratio-1) 层为 SWA，最后 1 层为 GQA。
-    """
     attn_type = cfg.attn_type
     if attn_type == "gqa":
         return GroupedQueryAttention(dim, n_heads, n_kv_heads, max_seq_len)
@@ -202,96 +344,73 @@ def create_attention_layer(dim, n_heads, n_kv_heads, max_seq_len, layer_idx):
         return MultiHeadLatentAttention(dim, n_heads, max_seq_len)
     elif attn_type == "swa":
         return SlidingWindowAttention(dim, n_heads, n_kv_heads, max_seq_len)
+    elif attn_type == "csa":
+        return CompressedSparseAttention(dim, n_heads, n_kv_heads, max_seq_len)
     elif attn_type == "hybrid":
-        ratio = cfg.swa_hybrid_ratio  # 默认 5
+        ratio = cfg.swa_hybrid_ratio
         is_global = (layer_idx % ratio == ratio - 1)
         if is_global:
             return GroupedQueryAttention(dim, n_heads, n_kv_heads, max_seq_len)
         else:
             return SlidingWindowAttention(dim, n_heads, n_kv_heads, max_seq_len)
+    elif attn_type == "hybrid_gdn":
+        ratio = cfg.gdn_hybrid_ratio
+        if (layer_idx % ratio) == (ratio - 1):
+            return GroupedQueryAttention(dim, n_heads, n_kv_heads, max_seq_len)
+        else:
+            return GatedDeltaNet(dim, n_heads, max_seq_len)
     else:
         return GroupedQueryAttention(dim, n_heads, n_kv_heads, max_seq_len)
 
+
 # =========================== 增强 MoE ===========================
-
-class MoEFeedForward(nn.Module):
-    """
-    增强 MoE: Sigmoid门控 + 分组限制 + 共享专家 + 动态偏置负载均衡
-    参考 DeepSeek-V3 和 MiMo-V2-Flash
-    """
-    def __init__(self, dim, hidden_dim, num_experts=8, top_k=2):
+class QwenStyleMoE(nn.Module):
+    """高稀疏度 MoE，带共享专家和动态偏置"""
+    def __init__(self, dim, hidden_dim, num_experts=32, top_k=2):
         super().__init__()
-        self.num_experts, self.top_k, self.dim = num_experts, top_k, dim
-        self.use_sigmoid = cfg.moe_use_sigmoid_gate
-        self.num_shared = cfg.moe_num_shared_experts
-        self.n_groups = cfg.moe_n_groups
-        self.topk_group = cfg.moe_topk_group
-        self.norm_topk = cfg.moe_norm_topk_prob
-        self.routed_scale = cfg.moe_routed_scaling_factor
-
+        self.num_experts = num_experts
+        self.top_k = top_k
         self.gate = nn.Linear(dim, num_experts, bias=False)
-        if cfg.moe_use_aux_loss_free:
-            self.register_buffer("e_score_correction_bias", torch.zeros(num_experts))
-        else:
-            self.e_score_correction_bias = None
 
+        self.shared_expert = nn.Sequential(
+            nn.Linear(dim, hidden_dim // 2, bias=False),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, dim, bias=False)
+        )
         self.experts = nn.ModuleList([
-            nn.Sequential(nn.Linear(dim, hidden_dim, bias=False), nn.SiLU(), nn.Linear(hidden_dim, dim, bias=False))
-            for _ in range(num_experts)
+            nn.Sequential(
+                nn.Linear(dim, hidden_dim, bias=False),
+                nn.SiLU(),
+                nn.Linear(hidden_dim, dim, bias=False)
+            ) for _ in range(num_experts)
         ])
-        self.shared_experts = None
-        if self.num_shared > 0:
-            self.shared_experts = nn.ModuleList([
-                nn.Sequential(nn.Linear(dim, hidden_dim, bias=False), nn.SiLU(), nn.Linear(hidden_dim, dim, bias=False))
-                for _ in range(self.num_shared)
-            ])
+        self.register_buffer("e_score_correction_bias", torch.zeros(num_experts))
 
     def forward(self, x):
         B, T, D = x.shape
         x_flat = x.view(-1, D)
 
-        shared_out = 0
-        if self.shared_experts is not None:
-            for s_expert in self.shared_experts:
-                shared_out = shared_out + s_expert(x_flat)
+        shared_out = self.shared_expert(x_flat)
 
-        gate_logits = self.gate(x_flat)
-        scores = gate_logits.sigmoid() if self.use_sigmoid else F.softmax(gate_logits, dim=-1)
-        if self.e_score_correction_bias is not None:
-            scores = scores + self.e_score_correction_bias
-
-        if self.n_groups > 1:
-            group_size = self.num_experts // self.n_groups
-            group_scores = scores.view(-1, self.n_groups, group_size)
-            group_topk = group_scores.topk(min(2, group_size), dim=-1)[0].sum(dim=-1)
-            group_idx = group_topk.topk(self.topk_group, dim=-1)[1]
-            group_mask = F.one_hot(group_idx, self.n_groups).max(dim=1)[0].unsqueeze(-1)
-            scores = (scores.view(-1, self.n_groups, group_size) * group_mask).view(-1, self.num_experts)
-
+        scores = self.gate(x_flat).sigmoid() + self.e_score_correction_bias
         topk_weights, topk_indices = torch.topk(scores, self.top_k, dim=-1)
-        if self.norm_topk:
-            topk_weights = topk_weights / (topk_weights.sum(dim=-1, keepdim=True) + 1e-20)
-        topk_weights = topk_weights * self.routed_scale
+        topk_weights = topk_weights / (topk_weights.sum(dim=-1, keepdim=True) + 1e-20)
 
-        out = torch.zeros_like(x_flat)
+        sparse_out = torch.zeros_like(x_flat)
         for i, expert in enumerate(self.experts):
             mask_i = (topk_indices == i).any(dim=-1)
             if not mask_i.any():
                 continue
             x_i = x_flat[mask_i]
-            if x_i.shape[0] == 0:
-                continue
-            expert_out = expert(x_i)
             idx_in_topk = (topk_indices[mask_i] == i).nonzero(as_tuple=True)[1]
             weight_i = topk_weights[mask_i][torch.arange(x_i.shape[0], device=x.device), idx_in_topk]
-            out[mask_i] = out[mask_i] + weight_i.unsqueeze(-1) * expert_out
+            sparse_out[mask_i] += weight_i.unsqueeze(-1) * expert(x_i)
 
-        return (shared_out + out).view(B, T, D)
+        return (shared_out + sparse_out).view(B, T, D)
+
 
 # =========================== MTP 模块 ===========================
-
 class MultiTokenPredictor(nn.Module):
-    """MTP 多 Token 预测 - 参考 MiMo-V2-Flash: 3层轻量级头，自投机解码加速2.6x"""
     def __init__(self, dim, vocab_size, num_layers=None, hidden_dim=None):
         super().__init__()
         n_layers = num_layers or cfg.mtp_num_layers
@@ -306,28 +425,30 @@ class MultiTokenPredictor(nn.Module):
         self.embed_norm = nn.LayerNorm(dim)
 
     def forward(self, hidden_states):
-        """返回 list of [B, T, vocab_size]"""
         h = self.embed_norm(hidden_states)
         predictions = []
         for head in self.mtp_heads:
             pred = head(h)
             predictions.append(pred)
-            # 用预测结果的 softmax 嵌入作为下一层输入
             h = F.linear(F.softmax(pred, dim=-1), self.mtp_heads[0][0].weight[:h.shape[-1]].t())
         return predictions
 
-# =========================== Transformer Block ===========================
 
+# =========================== Transformer Block ===========================
 class TransformerBlock(nn.Module):
-    def __init__(self, dim, n_heads, n_kv_heads, max_seq_len, use_moe=False, layer_idx=0):
+    def __init__(self, dim, n_heads, n_kv_heads, max_seq_len, use_moe=True, layer_idx=0):
         super().__init__()
         self.attn = create_attention_layer(dim, n_heads, n_kv_heads, max_seq_len, layer_idx)
         if use_moe:
-            self.ffn = MoEFeedForward(dim, dim*4, num_experts=cfg.num_experts, top_k=cfg.top_k_experts)
+            self.ffn = QwenStyleMoE(dim, dim * 4, num_experts=cfg.num_experts, top_k=cfg.top_k_experts)
         else:
             self.ffn = nn.Sequential(
-                nn.Linear(dim, dim*4, bias=False), nn.SiLU(), nn.Linear(dim*4, dim, bias=False))
-        self.norm1, self.norm2 = RMSNorm(dim), RMSNorm(dim)
+                nn.Linear(dim, dim * 4, bias=False),
+                nn.SiLU(),
+                nn.Linear(dim * 4, dim, bias=False)
+            )
+        self.norm1 = RMSNorm(dim)
+        self.norm2 = RMSNorm(dim)
 
     def forward(self, x, mask=None, use_cache=False, past_kv=None):
         attn_out, present_kv = self.attn(self.norm1(x), mask, use_cache, past_kv)
@@ -335,8 +456,8 @@ class TransformerBlock(nn.Module):
         x = x + self.ffn(self.norm2(x))
         return x, present_kv
 
-# =========================== MiniChat 主模型 ===========================
 
+# =========================== MiniChat 主模型 ===========================
 class MiniChat(nn.Module):
     def __init__(self, vocab_size, dim=cfg.dim, n_layers=cfg.n_layers,
                  n_heads=cfg.n_heads, n_kv_heads=cfg.n_kv_heads,
@@ -352,7 +473,7 @@ class MiniChat(nn.Module):
         self.max_seq_len = max_seq_len
         mask = torch.tril(torch.ones(max_seq_len, max_seq_len)).view(1,1,max_seq_len,max_seq_len)
         self.register_buffer("mask", mask)
-        # MTP
+
         self.mtp = None
         if cfg.use_mtp:
             self.mtp = MultiTokenPredictor(dim, vocab_size)
@@ -361,7 +482,6 @@ class MiniChat(nn.Module):
         B, T = idx.shape
         x = self.token_embedding(idx)
         if vision_embeds is not None:
-            assert vision_embeds.shape[-1] == x.shape[-1] and vision_embeds.shape[0] == x.shape[0]
             x = torch.cat([vision_embeds, x], dim=1)
             T = x.shape[1]
 
@@ -381,22 +501,24 @@ class MiniChat(nn.Module):
             loss = F.cross_entropy(logits[:, :-1, :].contiguous().view(-1, logits.size(-1)),
                                    targets[:, 1:].contiguous().view(-1))
 
-        # MTP 输出
-        mtp_predictions = None
-        if self.mtp is not None:
-            mtp_predictions = self.mtp(last_hidden)
-
+        mtp_predictions = self.mtp(last_hidden) if self.mtp else None
         return logits, loss, present_kvs, mtp_predictions
 
-    def generate(self, idx, max_new_tokens, temperature=cfg.temperature, top_k=cfg.top_k, vision_embeds=None):
+    def generate(self, idx, max_new_tokens, temperature=cfg.temperature, top_k=cfg.top_k,
+                 vision_embeds=None, use_mtp_spec=False):
+        if use_mtp_spec and self.mtp:
+            return self._generate_mtp(idx, max_new_tokens, temperature, top_k, vision_embeds)
+        return self._generate_vanilla(idx, max_new_tokens, temperature, top_k, vision_embeds)
+
+    def _generate_vanilla(self, idx, max_new_tokens, temperature, top_k, vision_embeds):
         past_kvs = None
-        for step in range(max_new_tokens):
+        for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.max_seq_len:]
             logits, _, past_kvs, _ = self.forward(
                 idx_cond, use_cache=True, past_kvs=past_kvs,
-                vision_embeds=vision_embeds if step == 0 else None)
+                vision_embeds=vision_embeds if past_kvs is None else None)
             logits = logits[:, -1, :] / temperature
-            if top_k is not None:
+            if top_k:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = -float('Inf')
             probs = F.softmax(logits, dim=-1)
@@ -404,4 +526,48 @@ class MiniChat(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
             if idx_next.item() == self.token_embedding.num_embeddings - 1:
                 break
+        return idx
+
+    def _generate_mtp(self, idx, max_new_tokens, temperature, top_k, vision_embeds):
+        past_kvs = None
+        mtp_depth = len(self.mtp.mtp_heads)
+        step = 0
+        while step < max_new_tokens and idx.shape[1] < self.max_seq_len:
+            idx_cond = idx[:, -self.max_seq_len:]
+            logits, _, past_kvs, mtp_preds = self.forward(
+                idx_cond, use_cache=True, past_kvs=past_kvs,
+                vision_embeds=vision_embeds if past_kvs is None else None)
+
+            # 基准 token
+            logits_base = logits[:, -1, :] / temperature
+            if top_k:
+                v, _ = torch.topk(logits_base, min(top_k, logits_base.size(-1)))
+                logits_base[logits_base < v[:, [-1]]] = -float('Inf')
+            probs = F.softmax(logits_base, dim=-1)
+            base_token = torch.multinomial(probs, num_samples=1)
+            draft_tokens = [base_token]
+
+            # MTP 预测
+            for i in range(mtp_depth):
+                mtp_logits = mtp_preds[i][:, -1, :] / temperature
+                if top_k:
+                    v, _ = torch.topk(mtp_logits, min(top_k, mtp_logits.size(-1)))
+                    mtp_logits[mtp_logits < v[:, [-1]]] = -float('Inf')
+                draft_tokens.append(torch.multinomial(F.softmax(mtp_logits, dim=-1), 1))
+
+            # 并行验证
+            draft_ids = torch.cat(draft_tokens, dim=1)
+            verify_in = torch.cat([idx_cond, draft_ids], dim=1)
+            with torch.no_grad():
+                verify_logits, _, _, _ = self.forward(verify_in)
+            accepted = [base_token]
+            for i in range(len(draft_tokens)-1):
+                pred_token = torch.argmax(verify_logits[:, idx_cond.shape[1]+i, :], dim=-1, keepdim=True)
+                if pred_token.item() == draft_tokens[i+1].item():
+                    accepted.append(pred_token)
+                else:
+                    accepted.append(pred_token)
+                    break
+            idx = torch.cat([idx, torch.cat(accepted, dim=1)], dim=1)
+            step += len(accepted)
         return idx

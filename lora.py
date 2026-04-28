@@ -35,15 +35,7 @@ def apply_lora_to_model(model, target_modules=None):
             for part in name_parts[:-1]:
                 parent = getattr(parent, part)
             original_linear = getattr(parent, name_parts[-1])
-            # 创建 LoRA 层，并保留原始权重
-            lora_layer = LoRALinear(
-                original_linear.in_features,
-                original_linear.out_features,
-                r=cfg.lora_r,
-                alpha=cfg.lora_alpha,
-                dropout=cfg.lora_dropout
-            )
-            # 将原始预训练权重复制过来
+            lora_layer = LoRALinear(original_linear.in_features, original_linear.out_features, r=cfg.lora_r, alpha=cfg.lora_alpha, dropout=cfg.lora_dropout)
             lora_layer.linear.weight.data.copy_(original_linear.weight.data)
             if original_linear.bias is not None:
                 lora_layer.linear.bias.data.copy_(original_linear.bias.data)

@@ -1,8 +1,8 @@
 import os
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import Chroma
+from langchain_chroma import Chroma
 from config import Config
 
 cfg = Config()
@@ -17,10 +17,10 @@ class RAGModule:
     def _load_or_create_db(self):
         if os.path.exists(f"{cfg.vector_db_path}/chroma.sqlite3"):
             self.vectorstore = Chroma(persist_directory=cfg.vector_db_path, embedding_function=self.embeddings)
-            print("已加载已有向量数据库。")
+            print("Loaded existing vector database.")
         else:
             self.vectorstore = None
-            print("未找到向量数据库，请先上传文档。")
+            print("No vector database found. Please upload documents first.")
 
     def add_documents(self, file_paths):
         documents = []
@@ -37,7 +37,7 @@ class RAGModule:
         else:
             self.vectorstore.add_documents(splits)
         self.vectorstore.persist()
-        print(f"已添加 {len(splits)} 个文本块到向量数据库。")
+        print(f"Added {len(splits)} text chunks to the vector database.")
 
     def retrieve(self, query, k=3):
         if self.vectorstore is None:

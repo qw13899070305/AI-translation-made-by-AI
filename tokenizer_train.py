@@ -7,7 +7,7 @@ from utils import ensure_dir
 cfg = Config()
 ensure_dir("./tokenizer")
 
-print("正在下载数据集（用于分词器训练）...")
+print("Downloading dataset for tokenizer training...")
 dataset = load_dataset(cfg.text_datasets[0], split="train", streaming=True)
 texts = []
 for i, sample in enumerate(dataset):
@@ -16,13 +16,13 @@ for i, sample in enumerate(dataset):
     q = sample.get('question') or sample.get('instruction')
     a = sample.get('response') or sample.get('output')
     if q and a:
-        texts.append(f"### 用户: {q}\n### 助手: {a}")
+        texts.append(f"### User: {q}\n### Assistant: {a}")
 
 with open("tokenizer_train_text.txt", "w", encoding="utf-8") as f:
     for text in texts:
         f.write(text + "\n")
 
-print("训练 BPE 分词器...")
+print("Training BPE tokenizer...")
 spm.SentencePieceTrainer.train(
     input="tokenizer_train_text.txt",
     model_prefix=f"tokenizer/{cfg.tokenizer_prefix}",
@@ -32,5 +32,5 @@ spm.SentencePieceTrainer.train(
     pad_id=0, unk_id=1, bos_id=2, eos_id=3,
     pad_piece="[PAD]", unk_piece="[UNK]", bos_piece="[BOS]", eos_piece="[EOS]"
 )
-print(f"分词器已保存到 tokenizer/{cfg.tokenizer_prefix}.model")
+print(f"Tokenizer saved to tokenizer/{cfg.tokenizer_prefix}.model")
 os.remove("tokenizer_train_text.txt")
