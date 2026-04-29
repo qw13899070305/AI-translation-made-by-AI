@@ -21,7 +21,7 @@ if cfg.use_lora:
     apply_lora_to_model(model)
     mark_only_lora_as_trainable(model)
 
-# 优化器选择
+# 优化器
 if cfg.use_muon:
     muon_params, adam_params = [], []
     for n, p in model.named_parameters():
@@ -43,6 +43,16 @@ else:
         filter(lambda p: p.requires_grad, model.parameters()), lr=cfg.learning_rate)
 
 scaler = GradScaler(enabled=(cfg.use_amp and cfg.device == "cuda"))
+
+# HTA 调度器：warmup + cosine
+scheduler = None
+if cfg.use_hta:
+    from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+    warmup = LinearLR(optimizer, start_factor=0.1, total_iters=cfg.hta_warmup_steps)
+    cosine = CosineAnnealingLR(optimizer, T_max=cfg.epochs * len(get_dataloader()) - cfg.hta_warmup_steps)
+    scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine],
+                             milestones=[cfg.hta_warmup_steps])
+
 train_loader = get_dataloader()
 
 best_loss, patience, no_improve = float('inf'), 2, 0
@@ -52,7 +62,9 @@ for epoch in range(1, cfg.epochs+1):
     pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{cfg.epochs}")
     for inputs, targets in pbar:
         inputs, targets = inputs.to(cfg.device), targets.to(cfg.device)
-        with autocast(enabled=(cfg.use_amp and cfg.device == "cuda")):
+        # 动态 FP8 支持：如果可用则启用
+        with autocast(dtype=torch.float8_e4m3fn if cfg.use_fp8 else torch.float16,
+                      enabled=(cfg.use_amp and cfg.device == "cuda")):
             _, loss, _, _ = model(inputs, targets)
         if torch.isnan(loss): continue
         optimizer.zero_grad()
@@ -61,6 +73,8 @@ for epoch in range(1, cfg.epochs+1):
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         scaler.step(optimizer)
         scaler.update()
+        if scheduler:
+            scheduler.step()
         total_loss += loss.item()
         pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 

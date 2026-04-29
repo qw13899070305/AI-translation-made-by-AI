@@ -97,6 +97,11 @@ class Config:
     muon_clip_grad = 1.0               # MuonClip 梯度裁剪阈值
     muon_clip_update = 1.0             # MuonClip 更新量裁剪阈值
 
+    # ========== 训练增强 ==========
+    use_fp8 = False                    # 动态 FP8 训练（需 GPU 支持）
+    use_hta = False                    # HTA 学习率调度
+    hta_warmup_steps = 100             # HTA warmup 步数
+
     # ========== RAG ==========
     embedding_model = "BAAI/bge-small-zh-v1.5"
     vector_db_path = "./vector_db"
