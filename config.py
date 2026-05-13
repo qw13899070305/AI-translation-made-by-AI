@@ -3,10 +3,10 @@ import torch
 class Config:
     # ========== 数据 ==========
     text_datasets = [
-        "Open-Orca/OpenOrca",        # 分词器训练需要的第一数据集（在线）
+        "Open-Orca/OpenOrca",
         "my_local_data.txt",
         "distillation.txt",
-        "enhanced_data.txt"          # 你的扩充数据，等生成后自动可用
+        "enhanced_data.txt"
     ]
     max_samples_per_dataset = 50000
     max_seq_len = 512
@@ -24,7 +24,7 @@ class Config:
     n_heads = 8
     n_kv_heads = 4
     use_moe = True
-    num_experts = 64                # 提高至 64，模仿 Kimi K2 的极高稀疏度
+    num_experts = 64
     top_k_experts = 2
 
     moe_use_sigmoid_gate = True
@@ -37,7 +37,6 @@ class Config:
 
     rope_theta = 10000.0
     rope_scaling_factor = 1.0
-
     use_ntk_rope = True
     original_max_seq_len = 512
     target_context_len = 2048
@@ -92,15 +91,15 @@ class Config:
     use_amp = True
 
     # ========== 优化器 ==========
-    use_muon = False                   # 使用 Muon 优化器
-    use_muon_clip = False              # 使用 MuonClip (Kimi K2 风格)
-    muon_clip_grad = 1.0               # MuonClip 梯度裁剪阈值
-    muon_clip_update = 1.0             # MuonClip 更新量裁剪阈值
+    use_muon = False
+    use_muon_clip = False
+    muon_clip_grad = 1.0
+    muon_clip_update = 1.0
 
     # ========== 训练增强 ==========
-    use_fp8 = False                    # 动态 FP8 训练（需 GPU 支持）
-    use_hta = False                    # HTA 学习率调度
-    hta_warmup_steps = 100             # HTA warmup 步数
+    use_fp8 = False
+    use_hta = False
+    hta_warmup_steps = 100
 
     # ========== RAG ==========
     embedding_model = "BAAI/bge-small-zh-v1.5"
@@ -115,9 +114,48 @@ class Config:
     distill_default_topic = "共产主义"
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
     temperature = 0.8
     top_k = 50
+
+    # ========== 2026 前沿新技术开关（全部默认关闭） ==========
+    # MoE 相关
+    use_latent_moe = False              # LatentMoE（低维潜空间路由，激活更多专家）
+    use_intra_expert_sparsity = False   # 专家内稀疏（跳过80%静默神经元）
+    intra_expert_sparsity_ratio = 0.2   # 保留比例 (0.2 即跳过 80%)
+    use_budgeted_lora = False           # 预算化 LoRA（弹性低秩动态门控）
+    budgeted_lora_rank = 4              # LoRA rank (4/8/16)
+    
+    # 推理优化
+    use_tts = False                     # Test‑Time Scaling（多步自我反思）
+    tts_steps = 3                       # 反思步数
+    use_adaptive_compute = False        # 自适应推理（根据置信度决定是否继续反思）
+    adaptive_compute_threshold = 0.8    # 置信度阈值
+    use_early_exit = False              # 早退推理（中间层置信足够高即退出）
+    early_exit_threshold = 0.9          # 早退置信度阈值
+    
+    # 长上下文优化
+    use_kv_compress = False             # KV Cache 压缩（每隔 k 步采样）
+    kv_compress_ratio = 0.25            # 压缩比例（保留 1/4）
+    use_paged_attn = False              # PagedAttention 模拟（分页缓存，实验性）
+    use_speed = False                   # SPEED: 层级非对称KV可见性（Prefill浅/Decode深）
+    speed_prefill_layers = 0.75         # Prefill阶段保留的层比例
+    
+    # 注意力加速
+    use_flash_attn3 = False             # 模拟 FlashAttention 3（FP8 + 分块）
+    use_dga = False                     # 动态门控注意力 (Dynamic Gated Attention)
+    use_uniprefill = False              # UniPrefill 预填充加速
+    
+    # 弹性推理
+    use_star_elastic = False            # Star Elastic（一个模型内嵌多个子模型，动态选择）
+    elastic_sizes = "4,6,8"              # 子模型的层数（字符串，如 "4,6,8"）
+    
+    # 隐式推理
+    use_latent_reasoning = False        # 隐式推理模块（压缩序列为隐向量）
+    latent_reasoning_dim = 128          # 隐向量维度
+    
+    # 其他增强
+    use_adaptive_moe_load = False       # 动态调整专家内部稀疏比例（根据负载）
+    use_mtp_distillation = False        # MTP 蒸馏（预训练阶段辅助）
 
     def validate(self):
         assert self.dim % self.n_heads == 0

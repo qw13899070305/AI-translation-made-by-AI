@@ -58,6 +58,20 @@ class GroupedQueryAttention(nn.Module):
         else:
             self.register_buffer("freqs_cis", precompute_freqs_cis(
                 self.head_dim, max_seq_len * 2, cfg.rope_theta, cfg.rope_scaling_factor))
+        if cfg.use_dga:
+            self.dga_gate = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+
+    def compress_kv_cache(self, k, v, compression_ratio=0.25, min_len=128):
+        # 修复：使用 cfg.use_kv_compress
+        if not cfg.use_kv_compress:
+            return k, v
+        seq_len = k.shape[2]
+        if seq_len <= min_len:
+            return k, v
+        step = max(2, int(1 / compression_ratio))
+        k = k[:, :, ::step, :]
+        v = v[:, :, ::step, :]
+        return k, v
 
     def forward(self, x, mask=None, use_cache=False, past_kv=None):
         B, T, C = x.shape
@@ -65,10 +79,16 @@ class GroupedQueryAttention(nn.Module):
         k = self.wk(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1,2)
         v = self.wv(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1,2)
         q, k = apply_rotary_emb(q, k, self.freqs_cis)
+
+        if cfg.use_dga:
+            gate = torch.sigmoid(self.dga_gate(x).view(B, T, self.n_heads, self.head_dim).transpose(1,2))
+            k = k * gate
+
         if past_kv is not None:
             k = torch.cat([past_kv[0], k], dim=2)
             v = torch.cat([past_kv[1], v], dim=2)
         present_kv = (k, v) if use_cache else None
+        k, v = self.compress_kv_cache(k, v)
         if use_cache and k.shape[2] > self.max_seq_len:
             k, v = k[:,:,-self.max_seq_len:,:], v[:,:,-self.max_seq_len:,:]
             present_kv = (k, v)
@@ -80,6 +100,7 @@ class GroupedQueryAttention(nn.Module):
         return self.wo(out), present_kv
 
 class SlidingWindowAttention(nn.Module):
+    # 保持原代码不变，此处省略（与你已有的一致）
     def __init__(self, dim, n_heads, n_kv_heads, max_seq_len, window_size=None):
         super().__init__()
         assert n_heads % n_kv_heads == 0
@@ -131,6 +152,7 @@ class SlidingWindowAttention(nn.Module):
         return self.wo(out), present_kv
 
 class MultiHeadLatentAttention(nn.Module):
+    # 保持原代码不变，此处省略
     def __init__(self, dim, n_heads, max_seq_len):
         super().__init__()
         self.n_heads = n_heads
@@ -176,6 +198,7 @@ class MultiHeadLatentAttention(nn.Module):
         return self.o_proj(out[:, -T:]), present_kv
 
 class GatedDeltaNet(nn.Module):
+    # 保持原代码不变，此处省略
     def __init__(self, dim, n_heads, max_seq_len):
         super().__init__()
         self.n_heads = n_heads
@@ -218,6 +241,7 @@ class GatedDeltaNet(nn.Module):
         return self.wo(out), present_kv
 
 class CompressedSparseAttention(nn.Module):
+    # 保持原代码不变，此处省略
     def __init__(self, dim, n_heads, n_kv_heads, max_seq_len):
         super().__init__()
         self.n_heads = n_heads
@@ -288,7 +312,6 @@ class CompressedSparseAttention(nn.Module):
         present_kv = (compressed_k, compressed_v) if use_cache else None
         return self.wo(out), present_kv
 
-# ========== 创建注意力层 ==========
 def create_attention_layer(dim, n_heads, n_kv_heads, max_seq_len, layer_idx):
     attn_type = cfg.attn_type
     if attn_type == "gqa":
@@ -315,7 +338,44 @@ def create_attention_layer(dim, n_heads, n_kv_heads, max_seq_len, layer_idx):
     else:
         return GroupedQueryAttention(dim, n_heads, n_kv_heads, max_seq_len)
 
-# ========== 增强 MoE (集成 SqrtGate) ==========
+# ========== Intra-Expert Sparsity 辅助类 ==========
+class IntraSparseExpert(nn.Module):
+    def __init__(self, dim, hidden_dim, sparsity_ratio=0.2):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.sparsity_ratio = sparsity_ratio
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+        self.act = nn.SiLU()
+
+    def forward(self, x):
+        shape = x.shape
+        x = x.view(-1, x.size(-1))
+        gate = self.act(self.w1(x))
+        k = max(1, int(self.hidden_dim * self.sparsity_ratio))
+        topk_vals, topk_idx = torch.topk(gate, k, dim=-1)
+        sparse_gate = torch.zeros_like(gate)
+        sparse_gate.scatter_(1, topk_idx, gate.gather(1, topk_idx))
+        out = self.w2(sparse_gate)
+        return out.view(*shape)
+
+# ========== Budgeted LoRA 包装器 ==========
+class BudgetedLoRAWrapper(nn.Module):
+    def __init__(self, ffn, dim, hidden_dim, budget_rank=4):
+        super().__init__()
+        self.ffn = ffn
+        self.budget_rank = budget_rank
+        self.lora_a = nn.Linear(dim, budget_rank, bias=False)
+        self.lora_b = nn.Linear(budget_rank, dim, bias=False)
+        self.gate = nn.Linear(dim, 1)
+
+    def forward(self, x):
+        ffn_out = self.ffn(x)
+        lora_out = self.lora_b(self.lora_a(x))
+        alpha = torch.sigmoid(self.gate(x.mean(dim=1, keepdim=True)))
+        return alpha * ffn_out + (1 - alpha) * lora_out
+
+# ========== MoE 模块 ==========
 class QwenStyleMoE(nn.Module):
     def __init__(self, dim, hidden_dim, num_experts=32, top_k=2):
         super().__init__()
@@ -327,16 +387,22 @@ class QwenStyleMoE(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_dim // 2, dim, bias=False)
         )
-        self.experts = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(dim, hidden_dim, bias=False),
-                nn.SiLU(),
-                nn.Linear(hidden_dim, dim, bias=False)
-            ) for _ in range(num_experts)
-        ])
-        self.register_buffer("e_score_correction_bias", torch.zeros(num_experts))
-        # SqrtGate：注册 sqrt(num_experts) 作为缩放因子
+        if cfg.use_intra_expert_sparsity:
+            self.experts = nn.ModuleList([
+                IntraSparseExpert(dim, hidden_dim, sparsity_ratio=cfg.intra_expert_sparsity_ratio)
+                for _ in range(num_experts)
+            ])
+        else:
+            self.experts = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(dim, hidden_dim, bias=False),
+                    nn.SiLU(),
+                    nn.Linear(hidden_dim, dim, bias=False)
+                ) for _ in range(num_experts)
+            ])
+        self.e_score_correction_bias = nn.Parameter(torch.zeros(num_experts))
         self.register_buffer("sqrt_num_experts", torch.sqrt(torch.tensor(num_experts, dtype=torch.float32)))
+        self.register_buffer("expert_load", torch.zeros(num_experts))
 
     def forward(self, x):
         B, T, D = x.shape
@@ -346,19 +412,101 @@ class QwenStyleMoE(nn.Module):
         topk_weights, topk_indices = torch.topk(scores, self.top_k, dim=-1)
         topk_weights = topk_weights / (topk_weights.sum(dim=-1, keepdim=True) + 1e-20)
         sparse_out = torch.zeros_like(x_flat)
+        expert_counts = torch.zeros(self.num_experts, device=x.device)
         for i, expert in enumerate(self.experts):
             mask_i = (topk_indices == i).any(dim=-1)
-            if not mask_i.any(): continue
+            if not mask_i.any():
+                continue
             x_i = x_flat[mask_i]
             idx_in_topk = (topk_indices[mask_i] == i).nonzero(as_tuple=True)[1]
             weight_i = topk_weights[mask_i][torch.arange(x_i.shape[0], device=x.device), idx_in_topk]
             sparse_out[mask_i] += weight_i.unsqueeze(-1) * expert(x_i)
+            expert_counts[i] = mask_i.sum().float()
+        self.expert_load = self.expert_load * 0.99 + expert_counts * 0.01
         combined = shared_out + sparse_out
-        # SqrtGate 缩放
         combined = combined / self.sqrt_num_experts
         return combined.view(B, T, D)
 
-# ========== MTP 模块 (保持不变) ==========
+    def update_bias(self):
+        with torch.no_grad():
+            target_load = self.expert_load.mean()
+            delta = 0.01 * (self.expert_load - target_load)
+            self.e_score_correction_bias -= delta
+
+class LatentMoE(nn.Module):
+    def __init__(self, dim, hidden_dim, num_experts=64, top_k=4, latent_rank=32):
+        super().__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.latent_rank = latent_rank
+        self.latent_proj = nn.Linear(dim, latent_rank)
+        self.gate = nn.Linear(latent_rank, num_experts, bias=False)
+        self.shared_expert = nn.Sequential(
+            nn.Linear(dim, hidden_dim // 2, bias=False),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, dim, bias=False)
+        )
+        if cfg.use_intra_expert_sparsity:
+            self.experts = nn.ModuleList([
+                IntraSparseExpert(dim, hidden_dim, sparsity_ratio=cfg.intra_expert_sparsity_ratio)
+                for _ in range(num_experts)
+            ])
+        else:
+            self.experts = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(dim, hidden_dim, bias=False),
+                    nn.SiLU(),
+                    nn.Linear(hidden_dim, dim, bias=False)
+                ) for _ in range(num_experts)
+            ])
+        self.e_score_correction_bias = nn.Parameter(torch.zeros(num_experts))
+        self.register_buffer("sqrt_num_experts", torch.sqrt(torch.tensor(num_experts, dtype=torch.float32)))
+        self.register_buffer("expert_load", torch.zeros(num_experts))
+
+    def forward(self, x):
+        B, T, D = x.shape
+        x_flat = x.view(-1, D)
+        shared_out = self.shared_expert(x_flat)
+        latent = self.latent_proj(x_flat)
+        scores = self.gate(latent).sigmoid() + self.e_score_correction_bias
+        topk_weights, topk_indices = torch.topk(scores, self.top_k, dim=-1)
+        topk_weights = topk_weights / (topk_weights.sum(dim=-1, keepdim=True) + 1e-20)
+        sparse_out = torch.zeros_like(x_flat)
+        expert_counts = torch.zeros(self.num_experts, device=x.device)
+        for i, expert in enumerate(self.experts):
+            mask_i = (topk_indices == i).any(dim=-1)
+            if not mask_i.any():
+                continue
+            x_i = x_flat[mask_i]
+            idx_in_topk = (topk_indices[mask_i] == i).nonzero(as_tuple=True)[1]
+            weight_i = topk_weights[mask_i][torch.arange(x_i.shape[0], device=x.device), idx_in_topk]
+            sparse_out[mask_i] += weight_i.unsqueeze(-1) * expert(x_i)
+            expert_counts[i] = mask_i.sum().float()
+        self.expert_load = self.expert_load * 0.99 + expert_counts * 0.01
+        combined = shared_out + sparse_out
+        combined = combined / self.sqrt_num_experts
+        return combined.view(B, T, D)
+
+    def update_bias(self):
+        with torch.no_grad():
+            target_load = self.expert_load.mean()
+            delta = 0.01 * (self.expert_load - target_load)
+            self.e_score_correction_bias -= delta
+
+# ========== 隐式推理模块 ==========
+class LatentReasoningModule(nn.Module):
+    def __init__(self, dim, latent_dim=128):
+        super().__init__()
+        self.compress = nn.Linear(dim, latent_dim)
+        self.expand = nn.Linear(latent_dim, dim)
+        self.norm = RMSNorm(dim)
+
+    def forward(self, x):
+        latent = self.compress(x.mean(dim=1))
+        reasoning = self.expand(latent).unsqueeze(1)
+        return x + reasoning
+
+# ========== MTP 模块 ==========
 class MultiTokenPredictor(nn.Module):
     def __init__(self, dim, vocab_size, num_layers=None, hidden_dim=None):
         super().__init__()
@@ -390,14 +538,21 @@ class TransformerBlock(nn.Module):
     def __init__(self, dim, n_heads, n_kv_heads, max_seq_len, use_moe=True, layer_idx=0):
         super().__init__()
         self.attn = create_attention_layer(dim, n_heads, n_kv_heads, max_seq_len, layer_idx)
+        # 修复：改为 cfg.use_latent_moe
+        use_latent_moe = cfg.use_latent_moe
         if use_moe:
-            self.ffn = QwenStyleMoE(dim, dim * 4, num_experts=cfg.num_experts, top_k=cfg.top_k_experts)
+            if use_latent_moe:
+                self.ffn = LatentMoE(dim, dim * 4, num_experts=cfg.num_experts, top_k=cfg.top_k_experts)
+            else:
+                self.ffn = QwenStyleMoE(dim, dim * 4, num_experts=cfg.num_experts, top_k=cfg.top_k_experts)
         else:
             self.ffn = nn.Sequential(
                 nn.Linear(dim, dim * 4, bias=False),
                 nn.SiLU(),
                 nn.Linear(dim * 4, dim, bias=False)
             )
+        if cfg.use_budgeted_lora:
+            self.ffn = BudgetedLoRAWrapper(self.ffn, dim, dim * 4, budget_rank=cfg.budgeted_lora_rank)
         self.norm1 = RMSNorm(dim)
         self.norm2 = RMSNorm(dim)
 
@@ -426,6 +581,11 @@ class MiniChat(nn.Module):
         self.mtp = None
         if cfg.use_mtp:
             self.mtp = MultiTokenPredictor(dim, vocab_size)
+        # 修复：改为 cfg.use_latent_reasoning
+        if cfg.use_latent_reasoning:
+            self.latent_modules = nn.ModuleList([LatentReasoningModule(dim, cfg.latent_reasoning_dim) for _ in range(n_layers // 2)])
+        else:
+            self.latent_modules = None
 
     def forward(self, idx, targets=None, use_cache=False, past_kvs=None, vision_embeds=None):
         B, T = idx.shape
@@ -440,6 +600,8 @@ class MiniChat(nn.Module):
             last_hidden, present_kv = block(last_hidden, self.mask, use_cache, past_kv)
             if use_cache:
                 present_kvs.append(present_kv)
+            if self.latent_modules and i % 2 == 0:
+                last_hidden = self.latent_modules[i // 2](last_hidden)
         last_hidden = self.norm(last_hidden)
         logits = self.lm_head(last_hidden)
         loss = None
@@ -451,9 +613,20 @@ class MiniChat(nn.Module):
 
     def generate(self, idx, max_new_tokens, temperature=cfg.temperature, top_k=cfg.top_k,
                  vision_embeds=None, use_mtp_spec=False):
+        # 修复：改为 cfg.use_tts 和 cfg.tts_steps
+        if cfg.use_tts and cfg.tts_steps > 1:
+            return self._generate_tts(idx, max_new_tokens, temperature, top_k, vision_embeds, use_mtp_spec, cfg.tts_steps)
         if use_mtp_spec and self.mtp:
             return self._generate_mtp(idx, max_new_tokens, temperature, top_k, vision_embeds)
         return self._generate_vanilla(idx, max_new_tokens, temperature, top_k, vision_embeds)
+
+    def _generate_tts(self, idx, max_new_tokens, temperature, top_k, vision_embeds, use_mtp_spec, tts_steps):
+        draft = self._generate_vanilla(idx, max_new_tokens // tts_steps, temperature, top_k, vision_embeds)
+        for step in range(1, tts_steps):
+            new_idx = torch.cat([idx, draft], dim=1)
+            new_tokens = max_new_tokens // (step + 1)
+            draft = self._generate_vanilla(new_idx, new_tokens, temperature, top_k, vision_embeds)
+        return draft
 
     def _generate_vanilla(self, idx, max_new_tokens, temperature, top_k, vision_embeds):
         past_kvs = None
@@ -467,6 +640,10 @@ class MiniChat(nn.Module):
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = -float('Inf')
             probs = F.softmax(logits, dim=-1)
+            if cfg.use_early_exit:
+                max_prob, _ = probs.max(dim=-1)
+                if max_prob.item() > cfg.early_exit_threshold:
+                    pass
             idx_next = torch.multinomial(probs, num_samples=1)
             idx = torch.cat((idx, idx_next), dim=1)
             if idx_next.item() == self.token_embedding.num_embeddings - 1:
@@ -488,6 +665,7 @@ class MiniChat(nn.Module):
                 logits_base[logits_base < v[:, [-1]]] = -float('Inf')
             probs = F.softmax(logits_base, dim=-1)
             base_token = torch.multinomial(probs, num_samples=1)
+
             draft_tokens = [base_token]
             for i in range(mtp_depth):
                 mtp_logits = mtp_preds[i][:, -1, :] / temperature
@@ -497,8 +675,11 @@ class MiniChat(nn.Module):
                 draft_tokens.append(torch.multinomial(F.softmax(mtp_logits, dim=-1), 1))
             draft_ids = torch.cat(draft_tokens, dim=1)
             verify_in = torch.cat([idx_cond, draft_ids], dim=1)
+
             with torch.no_grad():
-                verify_logits, _, _, _ = self.forward(verify_in)
+                verify_logits, _, new_past_kvs, _ = self.forward(
+                    verify_in, use_cache=True, past_kvs=past_kvs
+                )
             accepted = [base_token]
             for i in range(len(draft_tokens)-1):
                 pred_token = torch.argmax(verify_logits[:, idx_cond.shape[1]+i, :], dim=-1, keepdim=True)
@@ -507,6 +688,7 @@ class MiniChat(nn.Module):
                 else:
                     accepted.append(pred_token)
                     break
+            past_kvs = new_past_kvs
             idx = torch.cat([idx, torch.cat(accepted, dim=1)], dim=1)
             step += len(accepted)
         return idx

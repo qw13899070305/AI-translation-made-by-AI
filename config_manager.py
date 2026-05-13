@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-# config_manager.py —— 项目配置管理中心（中英双语版）
+# config_manager.py —— 配置管理中心（含所有新技术开关）
 import os, sys, shutil, re, importlib
 from config import Config
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
 BACKUP_FILE = CONFIG_FILE + ".bak"
 
-# 多语言文本
 TEXTS = {
     "en": {
         "lang_select": "Please select language / 请选择语言:",
@@ -22,6 +21,7 @@ TEXTS = {
         "menu_refresh": "🔄 Refresh Configuration",
         "menu_validate": "✅ Validate Configuration",
         "menu_distill": "🎓 Distillation Tool Config",
+        "menu_advanced": "⚙️ Advanced AI Features (2026)",
         "menu_exit": "Exit",
         "distill_title": "🎓 Distillation Tool Configuration",
         "distill_api": "Modify API Keys",
@@ -67,6 +67,23 @@ TEXTS = {
         "auto_batch_prompt": "Modify? (enter new value or n): ",
         "auto_gpu": "🎮 GPU: {} ({:.1f} GB)",
         "auto_gpu_hint": "💡 It is recommended to manually enable mixed precision training (AMP).",
+        # 高级功能菜单
+        "adv_title": "⚙️ Advanced AI Features Configuration (2026)",
+        "adv_latent_moe": "LatentMoE (efficient expert routing)",
+        "adv_intra_sparse": "Intra-Expert Sparsity (skip 80% neurons)",
+        "adv_budget_lora": "Budgeted LoRA (elastic low-rank)",
+        "adv_tts": "Test-Time Scaling (TTS)",
+        "adv_adaptive_compute": "Adaptive Compute (confidence-based)",
+        "adv_early_exit": "Early Exit (skip layers if confident)",
+        "adv_kv_compress": "KV Cache Compression",
+        "adv_paged_attn": "PagedAttention (experimental)",
+        "adv_flash_attn3": "FlashAttention 3 simulation",
+        "adv_star_elastic": "Star Elastic (multi-size submodels)",
+        "adv_latent_reasoning": "Latent Reasoning Module",
+        "adv_adaptive_moe_load": "Adaptive MoE Load Balance",
+        "adv_apply": "Apply and save to config.py",
+        "adv_current": "Current settings:",
+        "adv_restart": "Changes take effect after restarting the script.",
     },
     "zh": {
         "lang_select": "请选择语言 / Please select language:",
@@ -82,6 +99,7 @@ TEXTS = {
         "menu_refresh": "🔄 刷新配置",
         "menu_validate": "✅ 配置校验",
         "menu_distill": "🎓 蒸馏工具配置",
+        "menu_advanced": "⚙️ 高级 AI 功能 (2026)",
         "menu_exit": "退出",
         "distill_title": "🎓 蒸馏工具配置",
         "distill_api": "修改 API 密钥",
@@ -127,17 +145,33 @@ TEXTS = {
         "auto_batch_prompt": "是否修改？(输入新值或 n): ",
         "auto_gpu": "🎮 GPU: {} ({:.1f} GB)",
         "auto_gpu_hint": "💡 建议手动开启混合精度训练 (AMP)。",
+        # 高级功能菜单
+        "adv_title": "⚙️ 高级 AI 功能配置 (2026)",
+        "adv_latent_moe": "LatentMoE (高效专家路由)",
+        "adv_intra_sparse": "专家内稀疏 (跳过 80% 神经元)",
+        "adv_budget_lora": "预算化 LoRA (弹性低秩)",
+        "adv_tts": "推理时缩放 (TTS)",
+        "adv_adaptive_compute": "自适应计算 (基于置信度)",
+        "adv_early_exit": "早退推理 (置信高时跳过层)",
+        "adv_kv_compress": "KV 缓存压缩",
+        "adv_paged_attn": "PagedAttention (实验性)",
+        "adv_flash_attn3": "FlashAttention 3 模拟",
+        "adv_star_elastic": "Star Elastic (多尺寸子模型)",
+        "adv_latent_reasoning": "隐式推理模块",
+        "adv_adaptive_moe_load": "自适应 MoE 负载均衡",
+        "adv_apply": "应用并保存到 config.py",
+        "adv_current": "当前设置:",
+        "adv_restart": "修改后需要重启脚本才能生效。",
     },
 }
 
 def select_language():
-    print("=" * 50)
-    print("  🤖 My Own AI Assistant / 我的专属 AI 助手")
-    print("=" * 50)
-    print(f"  {TEXTS['en']['lang_select']}")
+    print("="*50)
+    print("  🤖 My Own AI Assistant Configuration Manager")
+    print("="*50)
     print("  1) English")
     print("  2) 中文")
-    choice = input(f"  {TEXTS['en']['lang_prompt']}").strip()
+    choice = input("  > ").strip()
     return "zh" if choice == "2" else "en"
 
 LANG = select_language()
@@ -149,9 +183,8 @@ def refresh_config():
     global Config
     from config import Config
 
-# 参数定义（全部参数，包括最新架构参数）
 ALL_CONFIG_PARAMS = [
-    ("text_datasets", ["Open-Orca/OpenOrca", "my_local_data.txt", "distillation.txt"], "训练数据集列表" if LANG=="zh" else "Training dataset list"),
+    ("text_datasets", ["Open-Orca/OpenOrca", "my_local_data.txt", "distillation.txt", "enhanced_data.txt"], "训练数据集列表" if LANG=="zh" else "Training dataset list"),
     ("max_samples_per_dataset", 50000, "每个数据集最大样本数" if LANG=="zh" else "Max samples per dataset"),
     ("max_seq_len", 512, "最大序列长度" if LANG=="zh" else "Max sequence length"),
     ("multimodal_dataset", "liuhaotian/LLaVA-Instruct-150K", "多模态数据集" if LANG=="zh" else "Multimodal dataset"),
@@ -230,14 +263,49 @@ ALL_CONFIG_PARAMS = [
     ("distill_deepseek_api_key", "your-deepseek-api-key", "DeepSeek API 密钥" if LANG=="zh" else "DeepSeek API key"),
     ("distill_qwen_api_key", "your-qwen-api-key", "Qwen API 密钥" if LANG=="zh" else "Qwen API key"),
     ("distill_default_topic", "共产主义", "默认蒸馏主题" if LANG=="zh" else "Default distillation topic"),
+    # ========== 2026 前沿新技术参数 ==========
+    ("use_latent_moe", False, "LatentMoE (高效专家路由)"),
+    ("use_intra_expert_sparsity", False, "专家内稀疏 (跳过 80% 神经元)"),
+    ("intra_expert_sparsity_ratio", 0.2, "专家内稀疏保留比例"),
+    ("use_budgeted_lora", False, "预算化 LoRA (弹性低秩)"),
+    ("budgeted_lora_rank", 4, "预算化 LoRA 秩"),
+    ("use_tts", False, "推理时缩放 (TTS)"),
+    ("tts_steps", 3, "TTS 步数"),
+    ("use_adaptive_compute", False, "自适应计算 (基于置信度)"),
+    ("adaptive_compute_threshold", 0.8, "自适应计算置信度阈值"),
+    ("use_early_exit", False, "早退推理 (置信高时跳过层)"),
+    ("early_exit_threshold", 0.9, "早退推理置信度阈值"),
+    ("use_kv_compress", False, "KV 缓存压缩"),
+    ("kv_compress_ratio", 0.25, "KV 缓存压缩比例"),
+    ("use_paged_attn", False, "PagedAttention (实验性)"),
+    ("use_flash_attn3", False, "FlashAttention 3 模拟"),
+    ("use_star_elastic", False, "Star Elastic (多尺寸子模型)"),
+    ("elastic_sizes", "4,6,8", "Star Elastic 子模型层数"),
+    ("use_latent_reasoning", False, "隐式推理模块"),
+    ("latent_reasoning_dim", 128, "隐式推理维度"),
+    ("use_adaptive_moe_load", False, "自适应 MoE 负载均衡"),
+    ("use_dga", False, "动态门控注意力 (DGA)"),
+    ("use_uniprefill", False, "UniPrefill 预填充加速"),
+    ("use_speed", False, "SPEED 层级非对称 KV"),
+    ("speed_prefill_layers", 0.75, "SPEED Prefill 层比例"),
+    ("use_mtp_distillation", False, "MTP 蒸馏"),
 ]
 
 def read_config_lines():
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f: return f.readlines()
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return f.readlines()
+    except FileNotFoundError:
+        # 如果文件不存在，创建一个默认的 config.py
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            f.write("import torch\n\nclass Config:\n    pass\n")
+        return []
 
 def write_config_lines(lines):
-    if os.path.exists(CONFIG_FILE): shutil.copy(CONFIG_FILE, BACKUP_FILE)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f: f.writelines(lines)
+    if os.path.exists(CONFIG_FILE):
+        shutil.copy(CONFIG_FILE, BACKUP_FILE)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        f.writelines(lines)
 
 def set_config_param(key, value):
     lines = read_config_lines()
@@ -255,9 +323,14 @@ def set_config_param(key, value):
             lines[i] = f'{m.group(1)}{new_val_str}{comment}\n'
             found = True
             break
-    if not found: print(T["param_not_found"].format(key)); return False
-    write_config_lines(lines); refresh_config()
-    print(T["edit_success"].format(key, value)); return True
+    if not found: 
+        # 如果没找到，追加到文件末尾
+        lines.append(f"{key} = {new_val_str}\n")
+        found = True
+    write_config_lines(lines)
+    refresh_config()
+    print(T["edit_success"].format(key, value))
+    return True
 
 def auto_optimize():
     import multiprocessing, torch
@@ -283,8 +356,12 @@ def auto_optimize():
 def menu_performance():
     while True:
         print(f"\n{T['perf_title']}")
-        print(f"  1) {T['perf_auto']}"); print(f"  2) {T['perf_batch']}"); print(f"  3) {T['perf_workers']}")
-        print(f"  4) {T['perf_epochs']}"); print(f"  5) {T['perf_view']}"); print(f"  0) {T['perf_return']}")
+        print(f"  1) {T['perf_auto']}")
+        print(f"  2) {T['perf_batch']}")
+        print(f"  3) {T['perf_workers']}")
+        print(f"  4) {T['perf_epochs']}")
+        print(f"  5) {T['perf_view']}")
+        print(f"  0) {T['perf_return']}")
         choice = input("  > ").strip()
         if choice == "1": auto_optimize()
         elif choice == "2":
@@ -310,7 +387,9 @@ def menu_performance():
 
 def menu_network():
     print(f"\n{T['network_title']}")
-    print(f"  1) {T['network_set']}"); print(f"  2) {T['network_clear']}"); print(f"  3) {T['network_view']}")
+    print(f"  1) {T['network_set']}")
+    print(f"  2) {T['network_clear']}")
+    print(f"  3) {T['network_view']}")
     choice = input("  > ").strip()
     if choice == "1":
         bashrc = os.path.expanduser("~/.bashrc")
@@ -355,7 +434,9 @@ def menu_environment():
 
 def menu_clean():
     print(f"\n{T['clean_title']}")
-    print(f"  1) {T['clean_hf']}"); print(f"  2) {T['clean_pycache']}"); print(f"  3) {T['clean_checkpoints']}")
+    print(f"  1) {T['clean_hf']}")
+    print(f"  2) {T['clean_pycache']}")
+    print(f"  3) {T['clean_checkpoints']}")
     c = input("  > ").strip()
     if c == "1":
         d = os.path.expanduser("~/.cache/huggingface")
@@ -374,8 +455,11 @@ def menu_clean():
 
 def menu_distill():
     print(f"\n{T['distill_title']}")
-    print(f"  1) {T['distill_api']}"); print(f"  2) {T['distill_output']}"); print(f"  3) {T['distill_topic']}")
-    print(f"  4) {T['distill_launch']}"); print(f"  0) {T['distill_return']}")
+    print(f"  1) {T['distill_api']}")
+    print(f"  2) {T['distill_output']}")
+    print(f"  3) {T['distill_topic']}")
+    print(f"  4) {T['distill_launch']}")
+    print(f"  0) {T['distill_return']}")
     sc = input("  > ").strip()
     if sc == "1":
         key = input("  输入密钥名称 (deepseek/qwen): ").strip()
@@ -400,6 +484,133 @@ def menu_distill():
         subprocess.run([sys.executable, "distill_mopd.py", "--topic", topic, "--output", output, "--lang", LANG])
     elif sc == "0": pass
     else: print(T["invalid_choice"])
+
+def menu_advanced():
+    refresh_config()
+    cfg = Config()
+    while True:
+        print(f"\n{T['adv_title']}")
+        print(f"  {T['adv_current']}")
+        # MoE 相关
+        print(f"    --- MoE Optimizations ---")
+        print(f"    use_latent_moe = {cfg.use_latent_moe}")
+        print(f"    use_intra_expert_sparsity = {cfg.use_intra_expert_sparsity} (ratio={cfg.intra_expert_sparsity_ratio})")
+        print(f"    use_budgeted_lora = {cfg.use_budgeted_lora} (rank={cfg.budgeted_lora_rank})")
+        print(f"    use_adaptive_moe_load = {cfg.use_adaptive_moe_load}")
+        # 推理优化
+        print(f"    --- Inference Optimizations ---")
+        print(f"    use_tts = {cfg.use_tts} (steps={cfg.tts_steps})")
+        print(f"    use_adaptive_compute = {cfg.use_adaptive_compute} (thresh={cfg.adaptive_compute_threshold})")
+        print(f"    use_early_exit = {cfg.use_early_exit} (thresh={cfg.early_exit_threshold})")
+        # 长上下文优化
+        print(f"    --- Long-Context Optimizations ---")
+        print(f"    use_kv_compress = {cfg.use_kv_compress} (ratio={cfg.kv_compress_ratio})")
+        print(f"    use_paged_attn = {cfg.use_paged_attn}")
+        print(f"    use_speed = {cfg.use_speed} (prefill_layers={cfg.speed_prefill_layers})")
+        print(f"    use_uniprefill = {cfg.use_uniprefill}")
+        # 注意力加速
+        print(f"    --- Attention Accelerations ---")
+        print(f"    use_flash_attn3 = {cfg.use_flash_attn3}")
+        print(f"    use_dga = {cfg.use_dga}")
+        # 弹性推理
+        print(f"    --- Elastic Inference ---")
+        print(f"    use_star_elastic = {cfg.use_star_elastic} (sizes={cfg.elastic_sizes})")
+        print(f"    use_latent_reasoning = {cfg.use_latent_reasoning} (dim={cfg.latent_reasoning_dim})")
+        # MTP 蒸馏
+        print(f"    --- MTP Distillation ---")
+        print(f"    use_mtp_distillation = {cfg.use_mtp_distillation}")
+        print()
+        print("  1) Toggle LatentMoE")
+        print("  2) Toggle Intra-Expert Sparsity (and set ratio)")
+        print("  3) Toggle Budgeted LoRA (and set rank)")
+        print("  4) Toggle TTS (and set steps)")
+        print("  5) Toggle Adaptive Compute (and set threshold)")
+        print("  6) Toggle Early Exit (and set threshold)")
+        print("  7) Toggle KV Compression (and set ratio)")
+        print("  8) Toggle PagedAttention")
+        print("  9) Toggle FlashAttention3 simulation")
+        print(" 10) Toggle Star Elastic (and set sizes)")
+        print(" 11) Toggle Latent Reasoning (and set dim)")
+        print(" 12) Toggle Adaptive MoE Load Balance")
+        print(" 13) Toggle DGA (Dynamic Gated Attention)")
+        print(" 14) Toggle SPEED (Layer-Asymmetric KV)")
+        print(" 15) Toggle UniPrefill")
+        print(" 16) Toggle MTP Distillation")
+        print(" 17) Apply and save changes")
+        print("  0) Return")
+        choice = input("  > ").strip()
+        if choice == "1":
+            set_config_param("use_latent_moe", not cfg.use_latent_moe)
+        elif choice == "2":
+            set_config_param("use_intra_expert_sparsity", not cfg.use_intra_expert_sparsity)
+            new_ratio = input(f"  New sparsity ratio (current {cfg.intra_expert_sparsity_ratio}): ").strip()
+            if new_ratio:
+                try:
+                    set_config_param("intra_expert_sparsity_ratio", float(new_ratio))
+                except: pass
+        elif choice == "3":
+            set_config_param("use_budgeted_lora", not cfg.use_budgeted_lora)
+            new_rank = input(f"  New budget rank (current {cfg.budgeted_lora_rank}): ").strip()
+            if new_rank.isdigit():
+                set_config_param("budgeted_lora_rank", int(new_rank))
+        elif choice == "4":
+            set_config_param("use_tts", not cfg.use_tts)
+            new_steps = input(f"  New TTS steps (current {cfg.tts_steps}): ").strip()
+            if new_steps.isdigit():
+                set_config_param("tts_steps", int(new_steps))
+        elif choice == "5":
+            set_config_param("use_adaptive_compute", not cfg.use_adaptive_compute)
+            new_thresh = input(f"  New confidence threshold (current {cfg.adaptive_compute_threshold}): ").strip()
+            if new_thresh:
+                set_config_param("adaptive_compute_threshold", float(new_thresh))
+        elif choice == "6":
+            set_config_param("use_early_exit", not cfg.use_early_exit)
+            new_thresh = input(f"  New early exit threshold (current {cfg.early_exit_threshold}): ").strip()
+            if new_thresh:
+                set_config_param("early_exit_threshold", float(new_thresh))
+        elif choice == "7":
+            set_config_param("use_kv_compress", not cfg.use_kv_compress)
+            new_ratio = input(f"  New compression ratio (current {cfg.kv_compress_ratio}): ").strip()
+            if new_ratio:
+                set_config_param("kv_compress_ratio", float(new_ratio))
+        elif choice == "8":
+            set_config_param("use_paged_attn", not cfg.use_paged_attn)
+        elif choice == "9":
+            set_config_param("use_flash_attn3", not cfg.use_flash_attn3)
+        elif choice == "10":
+            set_config_param("use_star_elastic", not cfg.use_star_elastic)
+            sizes = input(f"  New elastic sizes (comma separated, current {cfg.elastic_sizes}): ").strip()
+            if sizes:
+                set_config_param("elastic_sizes", sizes)
+        elif choice == "11":
+            set_config_param("use_latent_reasoning", not cfg.use_latent_reasoning)
+            new_dim = input(f"  New latent dimension (current {cfg.latent_reasoning_dim}): ").strip()
+            if new_dim.isdigit():
+                set_config_param("latent_reasoning_dim", int(new_dim))
+        elif choice == "12":
+            set_config_param("use_adaptive_moe_load", not cfg.use_adaptive_moe_load)
+        elif choice == "13":
+            set_config_param("use_dga", not cfg.use_dga)
+        elif choice == "14":
+            set_config_param("use_speed", not cfg.use_speed)
+            if cfg.use_speed:
+                ratio = input(f"  Prefill layer ratio (0.5~1.0, current {cfg.speed_prefill_layers}): ").strip()
+                if ratio:
+                    set_config_param("speed_prefill_layers", float(ratio))
+        elif choice == "15":
+            set_config_param("use_uniprefill", not cfg.use_uniprefill)
+        elif choice == "16":
+            set_config_param("use_mtp_distillation", not cfg.use_mtp_distillation)
+        elif choice == "17":
+            print("✅ Settings saved to config.py")
+            print(T["adv_restart"])
+            break
+        elif choice == "0":
+            break
+        else:
+            print(T["invalid_choice"])
+        refresh_config()
+        cfg = Config()
 
 def manual_edit():
     key = input(T["edit_prompt_name"]).strip()
@@ -441,6 +652,7 @@ def main_menu():
         print(f"  8) {T['menu_refresh']}")
         print(f"  9) {T['menu_validate']}")
         print(f"  10) {T['menu_distill']}")
+        print(f"  11) {T['menu_advanced']}")
         print(f"  0) {T['menu_exit']}")
         c = input("\n  > ").strip()
         if c == "1": menu_performance()
@@ -460,14 +672,35 @@ def main_menu():
             try: Config().validate(); print(T["validate_pass"])
             except AssertionError as e: print(T["validate_fail"].format(e))
         elif c == "10": menu_distill()
+        elif c == "11": menu_advanced()
         elif c == "0": print(T["goodbye"]); break
         else: print(T["invalid_choice"])
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
+    if len(sys.argv) > 2 and sys.argv[1] == "set_all":
+        enable = sys.argv[2].lower() == "true"
+        # 直接导入 config 模块并设置所有新技术参数
+        import config
+        importlib.reload(config)
+        from config import Config
+        # 动态设置所有高级功能开关
+        features = [
+            "use_latent_moe", "use_intra_expert_sparsity", "use_budgeted_lora",
+            "use_tts", "use_adaptive_compute", "use_early_exit", "use_kv_compress",
+            "use_paged_attn", "use_flash_attn3", "use_star_elastic",
+            "use_latent_reasoning", "use_adaptive_moe_load", "use_dga",
+            "use_uniprefill", "use_speed", "use_mtp_distillation"
+        ]
+        for feat in features:
+            set_config_param(feat, enable)
+        if enable:
+            print("✅ All advanced features enabled.")
+        else:
+            print("✅ All advanced features disabled.")
+    elif len(sys.argv) > 1:
         if sys.argv[1] == "auto": auto_optimize()
         elif sys.argv[1] == "check": menu_environment()
         elif sys.argv[1] == "clean": menu_clean()
-        else: print("用法: python config_manager.py [auto|check|clean]")
+        else: print("用法: python config_manager.py [auto|check|clean|set_all true|false]")
     else:
         main_menu()

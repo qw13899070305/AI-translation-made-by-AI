@@ -101,14 +101,18 @@ USE_LOCAL_FALLBACK = True
 
 
 def load_api_keys():
-    """从 config.py 加载 API 密钥"""
+    """从 config.py 加载 API 密钥，并给出缺失提示"""
     try:
         from config import Config
         cfg = Config()
         if hasattr(cfg, "distill_deepseek_api_key") and cfg.distill_deepseek_api_key != "your-deepseek-api-key":
             TEACHER_CONFIGS["deepseek"]["api_key"] = cfg.distill_deepseek_api_key
+        else:
+            print("⚠️ DeepSeek API key not configured. DeepSeek teacher will be skipped.")
         if hasattr(cfg, "distill_qwen_api_key") and cfg.distill_qwen_api_key != "your-qwen-api-key":
             TEACHER_CONFIGS["qwen"]["api_key"] = cfg.distill_qwen_api_key
+        else:
+            print("⚠️ Qwen API key not configured. Qwen teacher will be skipped.")
     except:
         pass
 

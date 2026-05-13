@@ -19,7 +19,14 @@ T = {
 model, sp, device = load_model_and_tokenizer(lang=LANG)
 cfg = Config()
 rag = RAGModule()
-vision_encoder = VisionEncoder().to(device) if cfg.use_multimodal else None
+
+# 多模态加载容错
+try:
+    vision_encoder = VisionEncoder().to(device) if cfg.use_multimodal else None
+except Exception as e:
+    print(f"⚠️ Vision encoder loading failed: {e}. Disabling multimodal.")
+    vision_encoder = None
+    cfg.use_multimodal = False
 
 def respond(message, history, uploaded_files, image):
     conv = ""
@@ -36,8 +43,10 @@ def respond(message, history, uploaded_files, image):
     vision_embeds = None
     if image is not None and vision_encoder is not None:
         vision_embeds = vision_encoder([image]).to(device)
+    # 当有图像时，暂时关闭 MTP 投机解码（因为模型生成方法未完全支持）
+    use_mtp_spec = cfg.use_mtp_speculative_decode and vision_embeds is None
     with torch.no_grad():
-        output_ids = model.generate(input_ids, max_new_tokens=300, vision_embeds=vision_embeds)
+        output_ids = model.generate(input_ids, max_new_tokens=300, vision_embeds=vision_embeds, use_mtp_spec=use_mtp_spec)
     response_ids = output_ids[0, input_ids.shape[1]:].tolist()
     response = sp.decode(response_ids)
     if "### Assistant:" in response:

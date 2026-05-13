@@ -2,9 +2,14 @@ import sys
 import json
 from duckduckgo_search import DDGS
 
-def search(query, max_results=5, region="cn-zh"):
-    with DDGS() as ddgs:
-        results = list(ddgs.text(query, max_results=max_results, region=region))
+def search(query, max_results=5, region="wt-wt"):   # 默认区域改为 wt-wt
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results, region=region))
+    except Exception as e:
+        print(f"Search failed with region={region}, retrying with 'wt-wt': {e}")
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results, region="wt-wt"))
     return [{"title": r.get("title", ""), "url": r.get("href", ""), "snippet": r.get("body", "")} for r in results]
 
 def format_results(results):

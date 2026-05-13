@@ -1,4 +1,5 @@
 import os, torch
+import torch.nn.functional as F          # 添加这一行
 from torch.cuda.amp import GradScaler, autocast
 from config import Config
 from dataset import get_dataloader
@@ -15,7 +16,8 @@ ensure_dir(cfg.lora_checkpoint_dir)
 
 sp = spm.SentencePieceProcessor()
 sp.load(f"tokenizer/{cfg.tokenizer_prefix}.model")
-model = MiniChat(sp.get_piece_size()).to(cfg.device)
+vocab_size = sp.get_piece_size()
+model = MiniChat(vocab_size).to(cfg.device)
 
 if cfg.use_lora:
     apply_lora_to_model(model)
@@ -44,29 +46,59 @@ else:
 
 scaler = GradScaler(enabled=(cfg.use_amp and cfg.device == "cuda"))
 
-# HTA 调度器：warmup + cosine
+train_loader = get_dataloader()
+
+# HTA 调度器
 scheduler = None
 if cfg.use_hta:
     from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+    total_steps = cfg.epochs * len(train_loader)
     warmup = LinearLR(optimizer, start_factor=0.1, total_iters=cfg.hta_warmup_steps)
-    cosine = CosineAnnealingLR(optimizer, T_max=cfg.epochs * len(get_dataloader()) - cfg.hta_warmup_steps)
+    cosine = CosineAnnealingLR(optimizer, T_max=total_steps - cfg.hta_warmup_steps)
     scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine],
                              milestones=[cfg.hta_warmup_steps])
 
-train_loader = get_dataloader()
-
 best_loss, patience, no_improve = float('inf'), 2, 0
-for epoch in range(1, cfg.epochs+1):
+start_epoch = 0
+resume_path = None  # 可设置断点续训路径
+
+if resume_path and os.path.exists(resume_path):
+    checkpoint = torch.load(resume_path, map_location=cfg.device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    if scheduler and 'scheduler_state_dict' in checkpoint:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    start_epoch = checkpoint['epoch']
+    best_loss = checkpoint.get('best_loss', float('inf'))
+    print(f"Resumed from {resume_path}, epoch {start_epoch}")
+
+for epoch in range(start_epoch, cfg.epochs):
     model.train()
     total_loss = 0
-    pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{cfg.epochs}")
-    for inputs, targets in pbar:
+    pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.epochs}")
+    for step, (inputs, targets) in enumerate(pbar):
         inputs, targets = inputs.to(cfg.device), targets.to(cfg.device)
-        # 动态 FP8 支持：如果可用则启用
         with autocast(dtype=torch.float8_e4m3fn if cfg.use_fp8 else torch.float16,
                       enabled=(cfg.use_amp and cfg.device == "cuda")):
-            _, loss, _, _ = model(inputs, targets)
-        if torch.isnan(loss): continue
+            _, loss, _, mtp_preds = model(inputs, targets=targets)
+
+        # ========== 添加 MTP 辅助损失 ==========
+        if mtp_preds is not None and cfg.use_mtp:
+            mtp_loss = 0.0
+            for i, pred in enumerate(mtp_preds):
+                shift = i + 1
+                if targets.shape[1] > shift:
+                    mtp_loss += F.cross_entropy(
+                        pred[:, :-shift, :].reshape(-1, vocab_size),
+                        targets[:, shift:].reshape(-1)
+                    )
+            if mtp_loss != 0.0:
+                mtp_loss = mtp_loss / len(mtp_preds)
+                loss = loss + 0.3 * mtp_loss
+        # =====================================
+
+        if torch.isnan(loss):
+            continue
         optimizer.zero_grad()
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
@@ -78,23 +110,38 @@ for epoch in range(1, cfg.epochs+1):
         total_loss += loss.item()
         pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
+        # 更新 MoE 动态偏置
+        if cfg.use_moe:
+            for block in model.blocks:
+                if hasattr(block.ffn, 'update_bias'):
+                    block.ffn.update_bias()
+
     avg_loss = total_loss / len(train_loader)
-    print(f"Epoch {epoch} Average Loss: {avg_loss:.4f}")
+    print(f"Epoch {epoch+1} Average Loss: {avg_loss:.4f}")
+
     if avg_loss < best_loss:
-        best_loss, no_improve = avg_loss, 0
-        if epoch % cfg.save_every == 0:
-            save_dict = {'epoch': epoch, 'loss': avg_loss}
-            if cfg.use_lora:
-                save_dict['model_state_dict'] = model.state_dict()
-                save_dict['lora_config'] = {'r': cfg.lora_r, 'alpha': cfg.lora_alpha}
-                save_path = f"{cfg.lora_checkpoint_dir}/lora_epoch_{epoch}.pt"
-            else:
-                save_dict['model_state_dict'] = model.state_dict()
-                save_path = f"{cfg.checkpoint_dir}/epoch_{epoch}.pt"
-            torch.save(save_dict, save_path)
-            print(f"Checkpoint saved to {save_path}")
+        best_loss = avg_loss
+        no_improve = 0
     else:
         no_improve += 1
         if no_improve >= patience:
-            print(f"Early stopping at epoch {epoch}")
+            print(f"Early stopping at epoch {epoch+1}")
             break
+
+    # 保存检查点（包含优化器状态）
+    if (epoch+1) % cfg.save_every == 0:
+        save_dict = {
+            'epoch': epoch+1,
+            'loss': avg_loss,
+            'best_loss': best_loss,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+        }
+        if scheduler:
+            save_dict['scheduler_state_dict'] = scheduler.state_dict()
+        if cfg.use_lora:
+            save_path = f"{cfg.lora_checkpoint_dir}/lora_epoch_{epoch+1}.pt"
+        else:
+            save_path = f"{cfg.checkpoint_dir}/epoch_{epoch+1}.pt"
+        torch.save(save_dict, save_path)
+        print(f"Checkpoint saved to {save_path}")

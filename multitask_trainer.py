@@ -1,5 +1,5 @@
 # multitask_trainer.py —— Multi-task Learning Trainer
-import torch, random
+import torch, random, os
 from config import Config
 from model import MiniChat
 from lora import apply_lora_to_model, mark_only_lora_as_trainable
@@ -13,18 +13,26 @@ sp.load(f"tokenizer/{cfg.tokenizer_prefix}.model")
 vocab_size = sp.get_piece_size()
 
 class MultiTaskTrainer:
-    def __init__(self):
+    def __init__(self, load_checkpoint=None):
         self.model = MiniChat(vocab_size).to(device)
+        if load_checkpoint and os.path.exists(load_checkpoint):
+            checkpoint = torch.load(load_checkpoint, map_location=device)
+            state_dict = checkpoint.get('model_state_dict', checkpoint)
+            self.model.load_state_dict(state_dict, strict=False)
+            print(f"✅ Loaded pre-trained model from {load_checkpoint}")
         apply_lora_to_model(self.model)
         mark_only_lora_as_trainable(self.model)
         self.task_weights = {"lm": 0.5, "qa": 0.3, "sentiment": 0.2}
         self.optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, self.model.parameters()), lr=cfg.learning_rate)
 
     def prepare_sample(self, text, task_type="lm"):
-        if task_type == "qa": text = f"Q&A: {text}"
-        elif task_type == "sentiment": text = f"Sentiment: {text}"
+        if task_type == "qa":
+            text = f"Q&A: {text}"
+        elif task_type == "sentiment":
+            text = f"Sentiment: {text}"
         ids = sp.encode(text, out_type=int, add_bos=True, add_eos=True)
-        if len(ids) > cfg.max_seq_len: ids = ids[:cfg.max_seq_len-1] + [sp.eos_id()]
+        if len(ids) > cfg.max_seq_len:
+            ids = ids[:cfg.max_seq_len-1] + [sp.eos_id()]
         input_ids = torch.tensor(ids, dtype=torch.long).unsqueeze(0).to(device)
         targets = input_ids.clone()
         return input_ids, targets
@@ -36,7 +44,9 @@ class MultiTaskTrainer:
             input_ids, targets = self.prepare_sample(text, task_type)
             _, loss, _, _ = self.model(input_ids, targets=targets)
             weighted_loss = self.task_weights[task_type] * loss
-            self.optimizer.zero_grad(); weighted_loss.backward(); self.optimizer.step()
+            self.optimizer.zero_grad()
+            weighted_loss.backward()
+            self.optimizer.step()
             total_loss += weighted_loss.item()
         return total_loss / len(batch_texts)
 
@@ -60,8 +70,9 @@ class MultiTaskTrainer:
         print("✅ Multi-task model saved.")
 
 if __name__ == "__main__":
+    # 示例：从已训练的模型开始多任务学习
+    trainer = MultiTaskTrainer(load_checkpoint="checkpoints/epoch_10.pt")
     lm_data = ["AI is a branch of computer science.", "Python is an interpreted language."] * 100
     qa_data = ["Q: What is machine learning? A: Machine learning enables computers to learn from data."] * 50
     sentiment_data = ["This movie is great, I love it!"] * 50
-    trainer = MultiTaskTrainer()
     trainer.train(lm_data, qa_data, sentiment_data, epochs=3)

@@ -74,15 +74,18 @@ class TextChatDataset(Dataset):
 
 
 def collate_fn(batch):
+    """返回输入和目标相同的完整序列（内部移位由模型负责）"""
     sp = spm.SentencePieceProcessor()
     sp.load(f"tokenizer/{cfg.tokenizer_prefix}.model")
     max_len = max(len(x) for x in batch)
     padded = torch.full((len(batch), max_len), sp.pad_id(), dtype=torch.long)
     for i, x in enumerate(batch):
         padded[i, :len(x)] = x
-    return padded[:, :-1], padded[:, 1:]
+    return padded, padded   # 修复：不再手动移位
 
 
 def get_dataloader(batch_size=cfg.batch_size):
     dataset = TextChatDataset()
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=cfg.num_workers, pin_memory=True if cfg.device == "cuda" else False, persistent_workers=True if cfg.num_workers > 0 else False)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn,
+                      num_workers=cfg.num_workers, pin_memory=True if cfg.device == "cuda" else False,
+                      persistent_workers=True if cfg.num_workers > 0 else False)
